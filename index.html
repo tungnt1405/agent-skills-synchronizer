@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkillSyncPro — Công cụ Đồng bộ Kỹ năng</title>
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Google Material Symbols Outlined -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            canvas: '#060e20',
+            surface: '#0b1326',
+            'surface-container-low': '#131b2e',
+            'surface-container': '#182035',
+            'surface-container-high': '#1b263f',
+            'surface-container-highest': '#222a3d',
+            primary: {
+              DEFAULT: '#6366f1',
+              hover: '#4f46e5',
+              light: '#818cf8',
+            },
+            status: {
+              synced: '#4edea3',
+              outdated: '#fbbf24',
+              missing: '#f87171',
+              benchmark: '#38bdf8'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace']
+          }
+        }
+      }
+    };
+  </script>
+
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body class="bg-canvas text-slate-100 font-sans antialiased">
+  <div class="h-screen w-screen flex flex-col overflow-hidden bg-canvas text-slate-100 font-sans">
+    
+    <!-- Topbar (h-14 / 56px) -->
+    <header class="h-14 shrink-0 bg-surface border-b border-slate-800/80 px-4 flex items-center justify-between z-20 select-none">
+      <!-- Left Side -->
+      <div class="flex items-center">
+        <!-- Mobile Hamburger toggle button -->
+        <button id="btn-sidebar-toggle" class="md:hidden text-slate-400 hover:text-white p-1 mr-2 rounded-md transition-colors focus:outline-none focus:ring-1 focus:ring-primary" aria-label="Toggle sidebar navigation">
+          <span class="material-symbols-outlined text-[22px]">menu</span>
+        </button>
+
+        <!-- 3 macOS dots decoration -->
+        <div class="flex items-center gap-1.5 mr-3">
+          <span class="w-3 h-3 rounded-full bg-[#ff5f56] inline-block shadow-sm"></span>
+          <span class="w-3 h-3 rounded-full bg-[#ffbd2e] inline-block shadow-sm"></span>
+          <span class="w-3 h-3 rounded-full bg-[#27c93f] inline-block shadow-sm"></span>
+        </div>
+
+        <!-- Vertical divider -->
+        <div class="h-4 w-px bg-slate-800 mr-3"></div>
+
+        <!-- Brand: logo icon + text -->
+        <div class="flex items-center gap-2.5">
+          <div class="w-7 h-7 rounded-lg bg-primary/20 text-primary border border-primary/30 flex items-center justify-center p-1.5">
+            <span class="material-symbols-outlined text-[18px]">sync_alt</span>
+          </div>
+          <span class="font-bold tracking-tight text-white text-sm sm:text-base">SkillSyncPro</span>
+        </div>
+
+        <!-- Breadcrumbs -->
+        <nav class="hidden sm:flex items-center gap-1.5 ml-4 pl-4 border-l border-slate-800 text-xs text-slate-400 font-mono" aria-label="Breadcrumb">
+          <span class="text-slate-300">Core-Infra-Monorepo</span>
+          <span class="text-slate-600">/</span>
+          <span>workspaces</span>
+          <span class="text-slate-600">/</span>
+          <span class="text-primary-light font-medium">sync-engine</span>
+        </nav>
+      </div>
+
+      <!-- Center & Right Side -->
+      <div class="flex items-center gap-3">
+        <!-- Quick Command Search Bar -->
+        <div id="quick-search-trigger" class="hidden md:flex items-center gap-2 px-3 py-1.5 bg-surface-container-low hover:bg-surface-container focus-within:bg-surface-container border border-slate-800 hover:border-slate-700 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/40 rounded-lg text-xs text-slate-400 transition-all shadow-inner cursor-text" title="Tìm nhanh lệnh hoặc kỹ năng (Ctrl+K)">
+          <span class="material-symbols-outlined text-[16px] text-slate-400 shrink-0">search</span>
+          <input id="quick-command-input" type="text" placeholder="Tìm nhanh lệnh hoặc kỹ năng..." class="bg-transparent border-none outline-none text-xs text-slate-200 placeholder-slate-400 w-48 lg:w-60">
+          <kbd id="search-shortcut-badge" class="ml-1 font-mono text-[10px] px-1.5 py-0.5 rounded bg-surface-container-highest border border-slate-700 text-slate-300 font-semibold shadow-sm shrink-0">⌘K</kbd>
+        </div>
+
+        <!-- Topbar Executor Status Container Shell -->
+        <div id="executor-status" data-testid="executor-status" aria-live="polite" class="px-2.5 py-1 rounded-full bg-surface-container-low text-slate-300 border border-slate-800 flex items-center gap-1.5 text-xs font-mono font-medium shadow-sm" title="AI Engine Executor: local-reference-merge-v1 (Sẵn sàng)">
+          <span id="executor-status-badge" class="w-2 h-2 rounded-full bg-slate-400"></span>
+          <span id="executor-status-label" class="tracking-wide">AI IDLE</span>
+          <span id="executor-status-progress" class="text-[10px] text-slate-500 hidden">(0/0)</span>
+        </div>
+
+        <!-- Telemetry badge -->
+        <div class="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 text-xs font-mono font-medium shadow-sm" title="Hệ thống Telemetry: Hoạt động ổn định">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse-glow"></span>
+          <span>TELEMETRY OK</span>
+        </div>
+
+        <!-- User Avatar -->
+        <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-600 to-violet-500 text-white text-xs font-bold flex items-center justify-center border border-white/20 shadow-md cursor-pointer hover:ring-2 hover:ring-primary/40 transition-all" title="User Profile: System Architect" tabindex="0" role="button" aria-label="User Profile">
+          SP
+        </div>
+      </div>
+    </header>
+
+    <!-- Body (flex-1 flex overflow-hidden relative) -->
+    <div class="flex-1 flex overflow-hidden relative">
+      
+      <!-- Mobile Backdrop Overlay -->
+      <div id="sidebar-backdrop" class="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm hidden md:hidden transition-opacity"></div>
+
+      <!-- Sidebar Navigation (w-60 / 240px) -->
+      <aside id="sidebar" class="w-60 shrink-0 bg-surface border-r border-slate-800/80 flex flex-col justify-between overflow-y-auto transition-transform duration-200 z-40 fixed md:static inset-y-0 left-0 top-14 md:top-0 -translate-x-full md:translate-x-0">
+        <!-- Navigation Menu -->
+        <div class="p-3 space-y-4">
+          <!-- Section Header 1: WORKSTATION -->
+          <div>
+            <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider px-3 py-2">
+              WORKSTATION
+            </div>
+            <nav class="space-y-1">
+              <!-- Item 1: Comparator Workstation (Active) -->
+              <a href="#comparator" id="nav-item-comparator" aria-current="page" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-semibold text-white bg-primary/15 border-l-2 border-primary transition-all">
+                <span class="material-symbols-outlined text-[18px] text-primary-light">compare_arrows</span>
+                <span>Comparator Workstation</span>
+              </a>
+
+              <!-- Item 2: Repository Matrix -->
+              <a href="#matrix" id="nav-item-matrix" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-surface-container/60 transition-all">
+                <span class="material-symbols-outlined text-[18px] text-slate-500">grid_view</span>
+                <span>Repository Matrix</span>
+              </a>
+
+              <!-- Item 3: Skill Taxonomies -->
+              <a href="#taxonomies" id="nav-item-taxonomies" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-surface-container/60 transition-all">
+                <span class="material-symbols-outlined text-[18px] text-slate-500">account_tree</span>
+                <span>Skill Taxonomies</span>
+              </a>
+
+              <!-- Item 4: Sync Telemetry -->
+              <a href="#telemetry" id="nav-item-telemetry" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-surface-container/60 transition-all">
+                <span class="material-symbols-outlined text-[18px] text-slate-500">insights</span>
+                <span>Sync Telemetry</span>
+              </a>
+            </nav>
+          </div>
+
+          <!-- Section Header 2: TOOLCHAINS & OPS -->
+          <div>
+            <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider px-3 py-2">
+              TOOLCHAINS & OPS
+            </div>
+            <nav class="space-y-1">
+              <!-- Item 5: Pipeline Integrations -->
+              <a href="#pipelines" id="nav-item-pipelines" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-surface-container/60 transition-all">
+                <span class="material-symbols-outlined text-[18px] text-slate-500">lan</span>
+                <span>Pipeline Integrations</span>
+              </a>
+
+              <!-- Item 6: Audit Logs -->
+              <a href="#audit" id="nav-item-audit" class="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-surface-container/60 transition-all">
+                <span class="material-symbols-outlined text-[18px] text-slate-500">history</span>
+                <span>Audit Logs</span>
+              </a>
+            </nav>
+          </div>
+        </div>
+
+        <!-- Bottom Daemon Status Widget -->
+        <div class="p-2 border-t border-slate-800/80">
+          <div class="bg-surface-container-low border border-slate-800/80 rounded-lg p-3">
+            <div class="flex items-center gap-2 font-mono text-xs text-slate-300 font-semibold">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>Daemon Active v2.14.0</span>
+            </div>
+            <div class="text-[11px] text-slate-400 mt-1 pl-4">
+              Synced 3m ago · Polling FS
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Workspace Container (id="main-workspace", flex-1 overflow-hidden bg-canvas flex flex-col min-h-0) -->
+      <main id="main-workspace" class="flex-1 overflow-hidden bg-canvas flex flex-col min-h-0">
+        <!-- View Container 1: Comparator Workstation Shell -->
+        <div id="view-comparator" class="flex-1 flex flex-col min-h-0 overflow-hidden"></div>
+
+        <!-- View Container 2: Git Diff Inspector Placeholder -->
+        <div id="view-diff-inspector" class="flex-1 flex flex-col min-h-0 overflow-hidden hidden"></div>
+      </main>
+
+    </div>
+
+    <!-- Modal Container & 4 Dialogs -->
+    <div id="modal-container" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4 transition-all duration-200">
+      
+      <!-- Modal 1: Confirmation Modal (Stitch Screen 2 - 5a5da8df81a94de7bb42c123ca0de706) -->
+      <div id="modal-confirm" class="modal-dialog hidden w-full max-w-lg bg-surface border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-confirm-title">
+        <!-- Modal Header -->
+        <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 bg-surface-container-low">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-primary/20 text-primary border border-primary/30 flex items-center justify-center shrink-0 shadow-inner">
+              <span class="material-symbols-outlined text-[22px]">swap_horiz</span>
+            </div>
+            <div>
+              <h3 id="modal-confirm-title" class="font-bold text-white text-base tracking-tight">
+                Xác nhận Chuyển sang Giao diện Đồng bộ & Hợp nhất
+              </h3>
+              <p class="text-xs text-slate-400 mt-0.5">
+                Khởi tạo phiên so sánh diff và chuẩn bị hợp nhất phiên bản.
+              </p>
+            </div>
+          </div>
+          <button type="button" data-modal-close class="w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-surface-container transition-colors flex items-center justify-center shrink-0 cursor-pointer" aria-label="Đóng">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="p-6 space-y-4">
+          <!-- Source comparison summary card -->
+          <div class="p-4 rounded-xl bg-surface-container-low border border-slate-800 space-y-3">
+            <div class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+              NGUỒN DỮ LIỆU ĐỐI SOÁT
+            </div>
+            <div class="grid grid-cols-2 gap-3 text-xs font-mono">
+              <div class="bg-surface-container/80 p-3 rounded-lg border border-slate-800 space-y-1">
+                <div class="text-slate-400 text-[11px] flex items-center gap-1">
+                  <span class="w-2 h-2 rounded-full bg-primary-light"></span>
+                  <span>Target (Đích):</span>
+                </div>
+                <div id="modal-confirm-target-repo" class="text-white font-bold truncate">proj-main-app-backend</div>
+                <div id="modal-confirm-target-branch" class="text-indigo-300 text-[11px] truncate">feature/skill-refresh</div>
+                <div id="modal-confirm-target-path" class="text-slate-500 text-[11px] truncate">~/work/sources/target</div>
+              </div>
+
+              <div class="bg-surface-container/80 p-3 rounded-lg border border-slate-800 space-y-1">
+                <div class="text-slate-400 text-[11px] flex items-center gap-1">
+                  <span class="w-2 h-2 rounded-full bg-sky-400"></span>
+                  <span>Reference (Chuẩn):</span>
+                </div>
+                <div id="modal-confirm-ref-repo" class="text-white font-bold truncate">skill-benchmark-monorepo</div>
+                <div id="modal-confirm-ref-branch" class="text-sky-300 text-[11px] truncate">release/v2.4.0</div>
+                <div id="modal-confirm-ref-path" class="text-slate-500 text-[11px] truncate">~/work/sources/reference</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Impact Warning Banner -->
+          <div class="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
+            <span class="material-symbols-outlined text-amber-400 text-[20px] shrink-0 mt-0.5">warning</span>
+            <div class="text-xs text-slate-300 leading-relaxed">
+              <strong class="text-amber-300">Cảnh báo:</strong>
+              Thao tác sẽ chuẩn bị đồng bộ <span id="modal-confirm-selected-count" class="font-bold text-white">0 files</span> đã chọn:
+              <span id="modal-confirm-matching-count" class="font-bold text-amber-300">0 trùng tên</span>,
+              <span id="modal-confirm-new-count" class="font-bold text-sky-300">0 file mới</span>.
+              Mọi thay đổi chưa lưu tại màn hình hiện tại sẽ được lưu tạm thành bản nháp (draft)
+              lúc <span id="modal-confirm-draft-time" class="font-mono text-slate-100">--:--:--</span>.
+            </div>
+          </div>
+
+          <!-- Draft Snapshot Checkbox -->
+          <label class="flex items-start gap-3 p-3 rounded-xl bg-surface-container-low border border-slate-800">
+            <input type="checkbox" id="chk-draft-state" checked disabled class="w-4 h-4 mt-0.5 rounded text-primary focus:ring-primary bg-surface-container-high border-slate-700">
+            <div class="text-xs">
+              <span class="text-white font-medium">Lưu draft trạng thái chọn file trước khi tiếp tục</span>
+              <span class="font-mono text-indigo-300 font-semibold block mt-0.5">SelectedForSync snapshot</span>
+              <p class="text-slate-400 text-[11px] mt-0.5">Module này chưa tạo backup file Target; backup thật thuộc bước AI execution tiếp theo.</p>
+            </div>
+          </label>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex items-center justify-end gap-3">
+          <button type="button" id="btn-cancel-confirm" data-modal-close class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all cursor-pointer">
+            Hủy bỏ
+          </button>
+          <button type="button" id="btn-proceed-confirm" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-semibold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-indigo-600/25 transition-all transform active:scale-95 cursor-pointer">
+            <span>Tiếp tục sang Merge Diff</span>
+            <span class="material-symbols-outlined text-[18px]">arrow_forward</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal 2: Merge Conflict Warning Modal (Stitch Screen 6 - 1aacdf2a039a415383c6c0803a6b917a) -->
+      <div id="modal-conflict" class="modal-dialog hidden w-full max-w-lg bg-surface border border-amber-500/40 rounded-2xl shadow-2xl shadow-amber-950/30 overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-conflict-title">
+        <!-- Modal Header -->
+        <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 bg-amber-500/10">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0 shadow-inner">
+              <span class="material-symbols-outlined text-[22px]">warning</span>
+            </div>
+            <div>
+              <h3 id="modal-conflict-title" class="font-bold text-white text-base tracking-tight">
+                Cảnh báo Xung đột Nhánh & Kỹ năng
+              </h3>
+              <p class="text-xs text-amber-300/80 mt-0.5">
+                Phát hiện nhánh phân kỳ (diverged branches) và xung đột mã nguồn.
+              </p>
+            </div>
+          </div>
+          <button type="button" data-modal-close class="w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-surface-container transition-colors flex items-center justify-center shrink-0 cursor-pointer" aria-label="Đóng">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="p-6 space-y-4">
+          <!-- Warning description -->
+          <div class="text-xs text-slate-300 leading-relaxed space-y-2">
+            <p>
+              Hệ thống phát hiện có <strong class="text-amber-400">sự phân kỳ lớn giữa Target và Reference</strong>. Một số tệp tin chứa các thay đổi mâu thuẫn không thể tự động hợp nhất an toàn mà không có chỉ định từ kỹ sư.
+            </p>
+            <p class="text-rose-300 font-medium">
+              Nguy cơ: Tự động ghi đè lúc này có thể làm mất các cấu hình hoặc tùy biến hiện tại của bạn.
+            </p>
+          </div>
+
+          <!-- Conflict File List Preview -->
+          <div class="space-y-2">
+            <div class="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+              <span>TỆP TIN ĐANG XUNG ĐỘT</span>
+              <span id="modal-conflict-badge-count" class="font-mono text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold">2 files</span>
+            </div>
+            <div id="modal-conflict-file-list" class="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              <div class="p-2.5 rounded-lg bg-surface-container-low border border-slate-800 flex items-center justify-between gap-2 text-xs font-mono">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="material-symbols-outlined text-amber-400 text-[16px] shrink-0">warning</span>
+                  <span class="text-slate-200 truncate font-medium">skills/brainstorming/SKILL.md</span>
+                </div>
+                <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0 font-semibold">1 conflict</span>
+              </div>
+              <div class="p-2.5 rounded-lg bg-surface-container-low border border-slate-800 flex items-center justify-between gap-2 text-xs font-mono">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="material-symbols-outlined text-amber-400 text-[16px] shrink-0">warning</span>
+                  <span class="text-slate-200 truncate font-medium">tais/setting.json</span>
+                </div>
+                <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0 font-semibold">1 conflict</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-lg bg-surface-container-low border border-slate-800 text-[11px] text-slate-400">
+            💡 Khuyến nghị: Mở Diff Inspector để xem từng khối xung đột và lựa chọn giữ bản Target, kéo bản Reference, hoặc tùy biến kết hợp.
+          </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex items-center justify-end gap-3">
+          <button type="button" id="btn-cancel-conflict" data-modal-close class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all cursor-pointer">
+            Hủy bỏ
+          </button>
+          <button type="button" id="btn-open-inspector-from-warning" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 text-white font-semibold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-amber-600/20 transition-all transform active:scale-95 cursor-pointer">
+            <span class="material-symbols-outlined text-[18px]">troubleshoot</span>
+            <span>Mở trình phân giải xung đột trong Inspector</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal 3: Merge Success Modal (Stitch Screen 4 - 3d32bcf84f3841618e6487bc0da371f4) -->
+      <div id="modal-success" class="modal-dialog hidden w-full max-w-lg bg-surface border border-emerald-500/40 rounded-2xl shadow-2xl shadow-emerald-950/30 overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-success-title">
+        <!-- Modal Header -->
+        <div class="px-6 pt-6 pb-4 flex flex-col items-center text-center relative bg-emerald-500/10 border-b border-slate-800">
+          <button type="button" data-modal-close class="absolute top-4 right-4 w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-surface-container transition-colors flex items-center justify-center cursor-pointer" aria-label="Đóng">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+
+          <div class="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)] mb-3">
+            <span class="material-symbols-outlined text-[32px]">task_alt</span>
+          </div>
+
+          <h3 id="modal-success-title" class="font-bold text-white text-lg tracking-tight">
+            Đồng bộ & Hợp nhất Thành công!
+          </h3>
+          <p class="text-xs text-emerald-300/80 mt-1">
+            Tất cả các tệp kỹ năng đã được cập nhật an toàn vào Target Workspace.
+          </p>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="p-6 space-y-4">
+          <!-- Stat highlights -->
+          <div class="grid grid-cols-3 gap-3">
+            <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 text-center space-y-1">
+              <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">MÃ PHIÊN ĐỒNG BỘ</div>
+              <div id="modal-success-session-id" class="font-mono text-sm font-bold text-emerald-400 bg-surface-container py-1 px-2 rounded border border-slate-800 inline-block">
+                sync-20260914153543
+              </div>
+            </div>
+
+            <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 text-center space-y-1">
+              <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">TỆP ĐÃ HỢP NHẤT</div>
+              <div id="modal-success-files-count" class="font-mono text-sm font-bold text-white py-1 px-2 inline-block">
+                14 files
+              </div>
+            </div>
+
+            <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 text-center space-y-1">
+              <div class="text-[11px] font-medium text-slate-400 uppercase tracking-wider">DÒNG THAY ĐỔI</div>
+              <div id="modal-success-lines-count" class="font-mono text-sm font-bold py-1 px-2 inline-flex items-center gap-1 justify-center">
+                <span class="text-emerald-400">+110</span>
+                <span class="text-slate-500">/</span>
+                <span class="text-rose-400">-13</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Timestamp row -->
+          <div class="p-3 rounded-lg bg-surface-container-low border border-slate-800 flex items-center justify-between text-xs font-mono text-slate-400">
+            <span class="flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-[16px] text-slate-500">schedule</span>
+              <span>Thời gian hoàn tất:</span>
+            </span>
+            <span id="modal-success-timestamp" class="text-slate-200 font-medium">Vừa xong</span>
+          </div>
+
+          <!-- Checklist -->
+          <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 space-y-2">
+            <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">TRẠNG THÁI KIỂM TRA</div>
+            <ul class="space-y-1.5 text-xs text-slate-300">
+              <li class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-emerald-400 text-[16px]">check_circle</span>
+                <span>Clean tree rebased & merged</span>
+              </li>
+              <li class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-emerald-400 text-[16px]">check_circle</span>
+                <span>Mã băm SHA-256 đối chiếu toàn vẹn 100%</span>
+              </li>
+              <li class="flex items-center gap-2">
+                <span class="material-symbols-outlined text-emerald-400 text-[16px]">check_circle</span>
+                <span>Đã xoá backup của lô sau khi Approve & Merge</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex items-center justify-between gap-3">
+          <button type="button" id="btn-view-audit-logs" class="px-4 py-2 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all flex items-center gap-1.5 cursor-pointer">
+            <span class="material-symbols-outlined text-[16px] text-slate-400">history</span>
+            <span>Xem Nhật ký Audit Logs</span>
+          </button>
+          <button type="button" id="btn-success-back-workstation" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white font-semibold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-emerald-600/25 transition-all transform active:scale-95 cursor-pointer">
+            <span class="material-symbols-outlined text-[18px]">home</span>
+            <span>Hoàn tất & Quay về</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal 4: Merge Failure Modal (Stitch Screen 5 - 81678445237f416fa42038706e1e8e11) -->
+      <div id="modal-failure" class="modal-dialog hidden w-full max-w-lg bg-surface border border-rose-500/40 rounded-2xl shadow-2xl shadow-rose-950/30 overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-failure-title" aria-describedby="modal-failure-subtitle">
+        <!-- Modal Header -->
+        <div class="px-6 pt-6 pb-4 flex flex-col items-center text-center relative bg-rose-500/10 border-b border-slate-800">
+          <button type="button" data-modal-close class="absolute top-4 right-4 w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-surface-container transition-colors flex items-center justify-center cursor-pointer" aria-label="Đóng">
+            <span class="material-symbols-outlined text-[20px]">close</span>
+          </button>
+
+          <div class="w-14 h-14 rounded-2xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-[0_0_20px_rgba(244,63,94,0.3)] mb-3">
+            <span class="material-symbols-outlined text-[32px]">error</span>
+          </div>
+
+          <h3 id="modal-failure-title" class="font-bold text-white text-lg tracking-tight">
+            Hợp nhất Thất bại (Merge Failure)
+          </h3>
+          <p id="modal-failure-subtitle" class="text-xs text-rose-300/80 mt-1">
+            Thao tác hợp nhất bị hủy bỏ do phát sinh lỗi nghiêm trọng hoặc xung đột tệp.
+          </p>
+        </div>
+
+        <!-- Modal Body -->
+        <div class="p-6 space-y-4">
+          <!-- Simulated Console Error Log -->
+          <div class="space-y-1.5">
+            <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+              <span>BÁO CÁO LỖI HỆ THỐNG</span>
+              <span class="text-rose-400 font-mono text-[10px]">exit status 1</span>
+            </div>
+            <div id="modal-failure-log" class="bg-black/70 border border-rose-500/30 rounded-xl p-3.5 font-mono text-xs text-rose-300/90 space-y-1.5 overflow-x-auto shadow-inner">
+              <div class="text-slate-400">GIT OPERATION: MERGE_ABORTED</div>
+              <div class="text-rose-400 font-semibold">error: Git merge conflict in SKILL.md: recursive merge aborted</div>
+              <div class="text-slate-400">fatal: Could not write new index file: target workspace filesystem is locked</div>
+              <div class="text-slate-500 text-[11px] pt-1">Hook declined to update refs/heads/feature/skill-refresh</div>
+            </div>
+          </div>
+
+          <!-- Remediation Guidance -->
+          <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 space-y-1.5 text-xs text-slate-300">
+            <div class="font-semibold text-white flex items-center gap-1.5">
+              <span class="material-symbols-outlined text-amber-400 text-[16px]">info</span>
+              <span>Hướng dẫn xử lý:</span>
+            </div>
+            <p id="modal-failure-guidance-text" class="text-slate-400 leading-relaxed">
+              Thư mục Target có thể đang bị khóa bởi một tiến trình chạy nền khác, hoặc có xung đột cú pháp chưa được giải quyết. Bạn có thể khôi phục trạng thái bản sao lưu (rollback) hoặc thử lại thao tác sau khi đóng các chương trình đang truy cập tệp.
+            </p>
+          </div>
+        </div>
+
+        <!-- Modal Footer -->
+        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex flex-wrap items-center justify-end gap-3">
+          <button type="button" id="btn-fail-rollback" class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all flex items-center gap-1.5 cursor-pointer">
+            <span class="material-symbols-outlined text-[16px] text-amber-400">history</span>
+            <span>Khôi phục Rollback</span>
+          </button>
+          <button type="button" id="btn-fail-download-log" title="Tải toàn bộ log kỹ thuật dạng tệp văn bản (.txt)" class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all flex items-center gap-1.5 cursor-pointer">
+            <span class="material-symbols-outlined text-[16px] text-sky-400">download</span>
+            <span>Tải Logs</span>
+          </button>
+          <button type="button" id="btn-fail-retry" class="px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-indigo-600 hover:from-rose-500 hover:to-indigo-500 text-white font-semibold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-rose-600/25 transition-all transform active:scale-95 cursor-pointer">
+            <span class="material-symbols-outlined text-[18px]">refresh</span>
+            <span>Thử lại tác vụ</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- Application Entrypoint Module -->
+  <script type="module" src="./assets/js/app.js"></script>
+</body>
+</html>
