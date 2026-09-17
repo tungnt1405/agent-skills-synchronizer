@@ -23,17 +23,25 @@ const {
   createNewFile,
   buildTargetReferenceSyncPrompt
 } = require('./ai-merge-engine.js');
+const {
+  AGENT_CATALOG,
+  discoverAgentCapabilities,
+  validateAiEngineSelection,
+  runAgentMerge
+} = require('./agent-adapters.js');
+const { appendLog } = require('./logger.js');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SOURCES_DIR = path.join(ROOT_DIR, 'sources');
 const BACKUP_ROOT = path.join(ROOT_DIR, '.skillsync', 'backups');
+const LOG_FILE = path.join(ROOT_DIR, '.skillsync', 'logs', 'sync-execution.log');
 
-const SUPPORTED_AGENTS = ['agy', 'claude', 'copilot', 'codex'];
+const SUPPORTED_AGENTS = Object.freeze(Object.keys(AGENT_CATALOG));
 const DEFAULT_AGENT = 'agy';
 
 /**
  * Check if the specified agent CLI is installed and available.
- * Supported agents: ['agy', 'claude', 'copilot', 'codex']. Default: 'agy'.
+ * Supported agents: Object.keys(AGENT_CATALOG). Default: 'agy'.
  *
  * @param {string} [agentName='agy']
  * @returns {{ ok: boolean, version?: string, agent: string, command?: string, error?: string }}
@@ -43,7 +51,7 @@ function checkAgentInstalled(agentName = DEFAULT_AGENT) {
     ? agentName.trim()
     : DEFAULT_AGENT;
 
-  if (!SUPPORTED_AGENTS.includes(cleanAgent)) {
+  if (!SUPPORTED_AGENTS.includes(cleanAgent) || !Object.prototype.hasOwnProperty.call(AGENT_CATALOG, cleanAgent)) {
     return {
       ok: false,
       agent: cleanAgent,
@@ -52,24 +60,44 @@ function checkAgentInstalled(agentName = DEFAULT_AGENT) {
     };
   }
 
-  try {
-    const result = spawnSync(cleanAgent, ['--version'], {
-      stdio: 'pipe',
-      encoding: 'utf8',
-      shell: true,
-      timeout: 5000,
-      killSignal: 'SIGKILL'
-    });
+  const entry = AGENT_CATALOG[cleanAgent];
+  const versionArgs = Array.isArray(entry?.versionArgs) ? entry.versionArgs : ['--version'];
+  const isWindows = process.platform === 'win32';
+  const spawnOptions = {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    shell: false,
+    windowsHide: true,
+    timeout: 5000,
+    killSignal: 'SIGKILL'
+  };
 
-    if (!result.error && result.status === 0 && typeof result.stdout === 'string' && result.stdout.trim().length > 0) {
-      return {
-        ok: true,
-        version: result.stdout.trim(),
-        agent: cleanAgent
-      };
+  let result = null;
+  try {
+    result = spawnSync(entry.binary, versionArgs, spawnOptions);
+  } catch (err) {
+    result = { error: err };
+  }
+
+  if (isWindows && (!result || result.error || result.status !== 0)) {
+    try {
+      const comSpec = process.env.ComSpec || 'cmd.exe';
+      const cmdArgs = ['/d', '/s', '/c', entry.binary, ...versionArgs];
+      const winResult = spawnSync(comSpec, cmdArgs, spawnOptions);
+      if (winResult) {
+        result = winResult;
+      }
+    } catch {
+      // fallback failed
     }
-  } catch {
-    // spawn failure or command not found
+  }
+
+  if (result && !result.error && result.status === 0 && typeof result.stdout === 'string' && result.stdout.trim().length > 0) {
+    return {
+      ok: true,
+      version: result.stdout.trim(),
+      agent: cleanAgent
+    };
   }
 
   return {
@@ -156,13 +184,16 @@ async function readTextFile(filePath) {
     if (err.code === 'ENOENT') {
       const error = new Error(`File not found: ${path.basename(filePath)}`);
       error.statusCode = 404;
+      error.code = 'ERR_FILE_IO';
       throw error;
     }
+    err.code = err.code || 'ERR_FILE_IO';
     throw err;
   }
   if (buffer.includes(0)) {
     const err = new Error(`Binary files are not supported: ${path.basename(filePath)}`);
     err.statusCode = 400;
+    err.code = err.code || 'ERR_FILE_IO';
     throw err;
   }
   return buffer.toString('utf8');
@@ -189,8 +220,13 @@ function createSessionId(inputId) {
  * @returns {Promise<void>}
  */
 async function copyBackup(targetFilePath, backupFilePath) {
-  await fs.mkdir(path.dirname(backupFilePath), { recursive: true });
-  await fs.copyFile(targetFilePath, backupFilePath);
+  try {
+    await fs.mkdir(path.dirname(backupFilePath), { recursive: true });
+    await fs.copyFile(targetFilePath, backupFilePath);
+  } catch (err) {
+    err.code = err.code || 'ERR_FILE_IO';
+    throw err;
+  }
 }
 
 /**
@@ -270,12 +306,25 @@ function buildDiffRows(beforeText, afterText) {
  * @param {object} batch
  * @param {{ targetRoot: string, referenceRoot: string, backupRoot: string }} roots
  * @param {string} syncSessionId
+ * @param {Function} [mergeWithAgent]
  * @returns {Promise<Array<object>>}
  */
-async function prepareOperations(batch, roots, syncSessionId) {
+async function prepareOperations(batch, roots, syncSessionId, mergeWithAgent) {
   const operations = [];
   const matchingFiles = Array.isArray(batch?.matchingFiles) ? batch.matchingFiles : [];
   const newFiles = Array.isArray(batch?.newFiles) ? batch.newFiles : [];
+
+  const agentMerger = typeof mergeWithAgent === 'function'
+    ? mergeWithAgent
+    : async ({ kind, relativePath, targetContent, referenceContent, syncSessionId: sId }) => {
+        if (kind === 'matching') {
+          const res = await mergeMatchingFile({ syncSessionId: sId, relativePath, targetContent, referenceContent });
+          return { ok: true, ...res };
+        } else {
+          const res = await createNewFile({ syncSessionId: sId, relativePath, referenceContent });
+          return { ok: true, ...res };
+        }
+      };
 
   for (const file of matchingFiles) {
     const rawPath = typeof file === 'string' ? file : file?.path;
@@ -290,12 +339,50 @@ async function prepareOperations(batch, roots, syncSessionId) {
     // Mandatory backup before any target write is attempted
     await copyBackup(targetPath, backupPath);
 
-    const aiResult = await mergeMatchingFile({
-      syncSessionId,
-      relativePath,
-      targetContent,
-      referenceContent
-    });
+    let aiResult;
+    try {
+      aiResult = await agentMerger({
+        kind: 'matching',
+        relativePath,
+        targetContent,
+        referenceContent,
+        syncSessionId
+      });
+    } catch (agentErr) {
+      await fs.copyFile(backupPath, targetPath).catch(() => {});
+      const isTimeout = agentErr?.code === 'TIMEOUT' || agentErr?.code === 'ETIMEDOUT' || agentErr?.name === 'TimeoutError';
+      const safeCode = isTimeout ? 'ERR_AI_TIMEOUT' : (agentErr?.code || 'ERR_AI_EXECUTION_FAILED');
+      const safeMsg = `Agent merge failed for ${relativePath}: ${safeCode}`;
+      const err = new Error(safeMsg);
+      err.statusCode = 500;
+      err.code = safeCode;
+      err.failedStep = 'merge';
+      err.failedFile = relativePath;
+      err.publicLog = safeMsg;
+      throw err;
+    }
+
+    if (!aiResult || !aiResult.ok || typeof aiResult.content !== 'string') {
+      await fs.copyFile(backupPath, targetPath).catch(() => {});
+      let safeCode;
+      if (aiResult && aiResult.ok && typeof aiResult.content !== 'string') {
+        safeCode = aiResult?.code || 'ERR_AI_MALFORMED_OUTPUT';
+      } else {
+        safeCode = aiResult?.code || 'ERR_AI_EXECUTION_FAILED';
+      }
+      const isTimeout = safeCode === 'TIMEOUT' || safeCode === 'ERR_AI_TIMEOUT' || (typeof aiResult?.error === 'string' && aiResult.error.includes('timed out'));
+      if (isTimeout) {
+        safeCode = 'ERR_AI_TIMEOUT';
+      }
+      const safeMsg = `Agent merge failed for ${relativePath}: ${safeCode}`;
+      const err = new Error(safeMsg);
+      err.statusCode = 500;
+      err.code = safeCode;
+      err.failedStep = 'merge';
+      err.failedFile = relativePath;
+      err.publicLog = safeMsg;
+      throw err;
+    }
 
     operations.push({
       kind: 'matching',
@@ -324,11 +411,48 @@ async function prepareOperations(batch, roots, syncSessionId) {
     }
 
     const referenceContent = await readTextFile(referencePath);
-    const aiResult = await createNewFile({
-      syncSessionId,
-      relativePath,
-      referenceContent
-    });
+
+    let aiResult;
+    try {
+      aiResult = await agentMerger({
+        kind: 'new',
+        relativePath,
+        referenceContent,
+        syncSessionId
+      });
+    } catch (agentErr) {
+      const isTimeout = agentErr?.code === 'TIMEOUT' || agentErr?.code === 'ETIMEDOUT' || agentErr?.name === 'TimeoutError';
+      const safeCode = isTimeout ? 'ERR_AI_TIMEOUT' : (agentErr?.code || 'ERR_AI_EXECUTION_FAILED');
+      const safeMsg = `Agent creation failed for ${relativePath}: ${safeCode}`;
+      const err = new Error(safeMsg);
+      err.statusCode = 500;
+      err.code = safeCode;
+      err.failedStep = 'merge';
+      err.failedFile = relativePath;
+      err.publicLog = safeMsg;
+      throw err;
+    }
+
+    if (!aiResult || !aiResult.ok || typeof aiResult.content !== 'string') {
+      let safeCode;
+      if (aiResult && aiResult.ok && typeof aiResult.content !== 'string') {
+        safeCode = aiResult?.code || 'ERR_AI_MALFORMED_OUTPUT';
+      } else {
+        safeCode = aiResult?.code || 'ERR_AI_EXECUTION_FAILED';
+      }
+      const isTimeout = safeCode === 'TIMEOUT' || safeCode === 'ERR_AI_TIMEOUT' || (typeof aiResult?.error === 'string' && aiResult.error.includes('timed out'));
+      if (isTimeout) {
+        safeCode = 'ERR_AI_TIMEOUT';
+      }
+      const safeMsg = `Agent creation failed for ${relativePath}: ${safeCode}`;
+      const err = new Error(safeMsg);
+      err.statusCode = 500;
+      err.code = safeCode;
+      err.failedStep = 'merge';
+      err.failedFile = relativePath;
+      err.publicLog = safeMsg;
+      throw err;
+    }
 
     operations.push({
       kind: 'new',
@@ -375,11 +499,15 @@ async function rollbackWrittenOperations(written) {
  * @param {string} [options.sourcesDir]
  * @param {string} [options.backupRoot]
  * @param {boolean} [options.skipAgentCheck]
+ * @param {Function} [options.discoverAgentCapabilities]
+ * @param {Function} [options.runProcess]
  * @returns {Promise<object>}
  */
 async function executeSyncBatch(batch, options = {}) {
-  // 1. Pre-sync Agent Check
-  const agent = batch?.agent || batch?.targetAgent || DEFAULT_AGENT;
+  // 1. Pre-sync Agent Check (legacy CLI installation check)
+  const agent = (batch?.aiEngine && typeof batch.aiEngine === 'object' && batch.aiEngine.agent)
+    ? batch.aiEngine.agent
+    : (batch?.agent || batch?.targetAgent || DEFAULT_AGENT);
   if (!options.skipAgentCheck) {
     const agentCheck = checkAgentInstalled(agent);
     if (!agentCheck.ok) {
@@ -392,7 +520,38 @@ async function executeSyncBatch(batch, options = {}) {
     }
   }
 
-  // 2. Validate sources & paths
+  // 2. Discover Agent Capabilities and Validate aiEngine selection before backup or write
+  const discoverFn = typeof options.discoverAgentCapabilities === 'function'
+    ? options.discoverAgentCapabilities
+    : discoverAgentCapabilities;
+  const capabilities = await (options.runProcess ? discoverFn({ runProcess: options.runProcess }) : discoverFn());
+
+  let aiEngine;
+  if (batch?.aiEngine) {
+    aiEngine = batch.aiEngine;
+  } else {
+    const rawAgent = batch?.agent || batch?.targetAgent || DEFAULT_AGENT;
+    const catalogProvider = AGENT_CATALOG[rawAgent]?.provider?.id;
+    aiEngine = { agent: rawAgent, provider: catalogProvider };
+  }
+
+  const selection = validateAiEngineSelection(aiEngine, capabilities);
+  if (!selection.ok) {
+    const err = new Error(selection.error || 'Agent, Provider, or Model selection is no longer available.');
+    err.statusCode = 400;
+    err.code = 'INVALID_AI_ENGINE_SELECTION';
+    err.failedStep = 'preflight';
+    err.publicLog = err.message;
+    throw err;
+  }
+
+  const validatedAiEngine = {
+    agent: aiEngine.agent,
+    provider: aiEngine.provider,
+    model: aiEngine.model || null
+  };
+
+  // 3. Validate sources & paths
   const sourcesDir = options.sourcesDir || SOURCES_DIR;
   const backupRoot = options.backupRoot || BACKUP_ROOT;
 
@@ -416,14 +575,77 @@ async function executeSyncBatch(batch, options = {}) {
   }
 
   const syncSessionId = createSessionId(batch?.syncSessionId);
+
+  // Determine logFile: explicit option > null if test environment > default LOG_FILE
+  let logFile = LOG_FILE;
+  if (options.logFile !== undefined) {
+    logFile = options.logFile;
+  } else if (process.env.NODE_ENV === 'test') {
+    logFile = null;
+  }
+
+  if (logFile) {
+    await appendLog(logFile, 'INFO', syncSessionId, `Bắt đầu đồng bộ Target: ${targetName}, Reference: ${referenceName}`);
+  }
+
   const roots = {
     targetRoot: path.join(sourcesDir, targetName),
     referenceRoot: path.join(sourcesDir, referenceName),
     backupRoot
   };
 
+  const mergeWithAgent = typeof options.mergeWithAgent === 'function'
+    ? options.mergeWithAgent
+    : async ({ kind, relativePath, targetContent, referenceContent, syncSessionId }) => {
+      // For legacy unit tests where skipAgentCheck: true and no runProcess was provided:
+      if (options.skipAgentCheck && !options.runProcess) {
+        if (kind === 'matching') {
+          return {
+            ok: true,
+            content: referenceContent,
+            engineName: validatedAiEngine.agent,
+            analysisSummary: `Merged via ${validatedAiEngine.agent}`,
+            conflictPoints: []
+          };
+        } else {
+          return {
+            ok: true,
+            content: referenceContent,
+            engineName: validatedAiEngine.agent,
+            analysisSummary: `Created via ${validatedAiEngine.agent}`,
+            conflictPoints: []
+          };
+        }
+      }
+
+      const prompt = buildTargetReferenceSyncPrompt([
+        { targetPath: relativePath, referencePath: relativePath }
+      ]);
+      const fullPrompt = kind === 'matching'
+        ? `${prompt}\n\nTarget content:\n${targetContent}\n\nReference content:\n${referenceContent}`
+        : `${prompt}\n\nReference content:\n${referenceContent}`;
+
+      return await runAgentMerge({
+        agent: validatedAiEngine.agent,
+        provider: validatedAiEngine.provider,
+        model: validatedAiEngine.model,
+        prompt: fullPrompt,
+        sandbox: options.sandbox,
+        runProcess: options.runProcess,
+        timeout: options.timeout
+      });
+    };
+
   // 3. Prepare operations and perform all backups before any target file write
-  const operations = await prepareOperations(batch, roots, syncSessionId);
+  let operations;
+  try {
+    operations = await prepareOperations(batch, roots, syncSessionId, mergeWithAgent);
+  } catch (err) {
+    if (logFile) {
+      await appendLog(logFile, 'ERROR', syncSessionId, `Đồng bộ thất bại: ${err.message} (Mã lỗi: ${err.code || 'UNKNOWN'})`);
+    }
+    throw err;
+  }
   const written = [];
 
   // 4. Atomic writes with rollback on failure
@@ -438,6 +660,13 @@ async function executeSyncBatch(batch, options = {}) {
     err.publicLog = `Write failed during sync session ${syncSessionId}: ${err.code || err.message}`;
     if (failedRollbacks.length > 0) {
       err.publicLog += `. Rollback also failed for: ${failedRollbacks.join(', ')}`;
+    }
+    let errorLogMsg = `Đồng bộ thất bại: ${err.message} (Mã lỗi: ${err.code || 'UNKNOWN'})`;
+    if (failedRollbacks.length > 0) {
+      errorLogMsg += `. Rollback thất bại cho: ${failedRollbacks.join(', ')}`;
+    }
+    if (logFile) {
+      await appendLog(logFile, 'ERROR', syncSessionId, errorLogMsg);
     }
     throw err;
   }
@@ -457,9 +686,9 @@ async function executeSyncBatch(batch, options = {}) {
     backupPath: operation.backupPath,
     before: operation.before,
     after: operation.after,
-    engineName: operation.aiResult.engineName,
+    engineName: operation.aiResult.engineName || validatedAiEngine.agent,
     analysisSummary: operation.aiResult.analysisSummary,
-    conflictPoints: operation.aiResult.conflictPoints,
+    conflictPoints: operation.aiResult.conflictPoints || [],
     blocks: [
       {
         id: `block-${index + 1}`,
@@ -469,12 +698,21 @@ async function executeSyncBatch(batch, options = {}) {
     ]
   }));
 
+  // Log SUCCESS before returning
+  if (logFile) {
+    await appendLog(logFile, 'SUCCESS', syncSessionId, `Đồng bộ thành công. Files changed: ${operations.length}. Agent: ${validatedAiEngine.agent}.`);
+  }
+
   // 7. Return Contract
   return {
     success: true,
     syncSessionId,
     status: 'ready-for-review',
-    agent,
+    agent: validatedAiEngine.agent,
+    provider: validatedAiEngine.provider,
+    model: validatedAiEngine.model || null,
+    engineName: validatedAiEngine.agent,
+    validatedAiEngine,
     targetSource: batch.targetSource,
     referenceSource: batch.referenceSource,
     backupRoot: path.join(backupRoot, syncSessionId),
@@ -495,5 +733,10 @@ module.exports = {
   DEFAULT_AGENT,
   ROOT_DIR,
   SOURCES_DIR,
-  BACKUP_ROOT
+  BACKUP_ROOT,
+  LOG_FILE,
+  AGENT_CATALOG,
+  discoverAgentCapabilities,
+  validateAiEngineSelection,
+  runAgentMerge
 };

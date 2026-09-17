@@ -30,7 +30,9 @@ dependencies: []
 Khi hai nguồn xung đột:
 
 1. Cấu trúc, layout, style, naming convention → ưu tiên `target`.
+   * **Ngoại lệ:** Các thành phần cấu trúc mang tính thông tin mở rộng của `reference` (như HTML comment `<!-- ... -->`, checklist chuẩn mực, heading chi tiết hơn) thì `target` phải kế thừa và bổ sung chứ không được bỏ qua.
 2. Nội dung, logic, terminology, wording → ưu tiên `reference`.
+   * **Ngoại lệ:** Định danh dự án (Project Identity), tên repository, thương hiệu của `target` (VD: `TargetProject`, `my-project`) là bất khả xâm phạm. Tuyệt đối không dùng tên định danh của `reference` (VD: `ReferenceProject`, `upstream-repo`) để ghi đè lên tên định danh của `target`. Khi kế thừa nội dung/cấu trúc từ reference có nhắc đến tên hoặc định danh của reference, phải chuyển đổi sang tên/định danh tương ứng của target (VD: nếu reference ghi *"Tài liệu cấu hình ReferenceProject"* thì khi mang sang target phải chuyển thành *"Tài liệu cấu hình TargetProject"*).
 3. Nếu không thể xác định rõ xung đột thuộc loại nào → không tự coi là chắc chắn; đánh dấu `uncertain`.
 
 ### 2.2 Scope
@@ -43,7 +45,10 @@ Không:
 * refactor ngoài phạm vi;
 * đổi cấu trúc target chỉ vì reference có cấu trúc khác;
 * thêm thông tin từ kiến thức riêng của agent;
-* “cải thiện” wording nếu reference không cung cấp căn cứ.
+* “cải thiện” wording nếu reference không cung cấp căn cứ;
+* thêm bất kỳ thông tin, dữ liệu, hoặc thành phần nào nằm ngoài phạm vi có sẵn trong 2 file (chỉ so sánh trực tiếp 2 file Target và Reference);
+* đưa nội dung review, checklist ngoài lề hoặc văn bản thừa vào nội dung file đích;
+* tự tiện reformat hay normalize khoảng trắng/dòng trống ngoài phạm vi khác biệt nội dung thực tế.
 
 ### 2.3 Preservation
 
@@ -299,13 +304,13 @@ Target đã tương đương hoặc tốt hơn reference.
 
 ### REPLACE
 
-Reference chính xác/chặt chẽ hơn.
+Reference chính xác/chặt chẽ hơn (bao gồm cả việc Reference dùng heading, câu chữ quy chuẩn hơn như `## What happened?` thay vì `what?` hoặc `## What happend?`).
 
-→ thay nội dung target bằng nội dung tương ứng từ reference.
+→ thay nội dung target bằng nội dung tương ứng từ reference (lưu ý vẫn giữ Project Identity của target).
 
 ### ADD
 
-Reference có thông tin cần thiết mà target thiếu.
+Reference có thông tin cần thiết mà target thiếu (bao gồm cả các boilerplate text, HTML comment hướng dẫn).
 
 → thêm vào vị trí tương ứng trong structure target.
 

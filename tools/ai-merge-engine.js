@@ -134,6 +134,11 @@ function buildTargetReferenceSyncPrompt(pairs = []) {
     'Bạn là reviewer/approver của dự án đồng bộ.',
     'Mục tiêu: đồng bộ các cặp Target ↔ Reference dưới đây theo skill `target-reference-file-sync` của dự án - áp dụng đúng rubric trong đó: Target giữ nguyên cấu trúc/format, Reference làm chuẩn nội dung/logic/từ ngữ.',
     '',
+    'QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ:',
+    'A. Kế thừa Cấu trúc Mở rộng: Nếu Reference có các nội dung boilerplate, HTML comment hướng dẫn (VD: <!-- BEFORE FILING: ... -->), hoặc cấu trúc chặt chẽ hơn (VD: `## What happened?` thay vì `what?`), Target phải kế thừa và bổ sung các thành phần này đúng vị trí.',
+    'B. Bảo toàn Định danh Dự án: Các định danh dự án, tên riêng của Target (VD: TargetProject) TUYỆT ĐỐI KHÔNG ĐƯỢC thay thế bằng tên của Reference (VD: ReferenceProject). Nếu cấu trúc Reference có nhắc đến tên dự án của Reference, khi mang sang Target phải đổi thành tên dự án của Target.',
+    'C. Phạm vi So sánh Khép kín (Strict 2-File Scope): CHỈ SO SÁNH TRỰC TIẾP GIỮA 2 FILE (Target và Reference). TUYỆT ĐỐI KHÔNG ĐƯỢC THÊM bất kỳ nội dung, ghi chú, giải thích, checklist hoặc trường dữ liệu nào nằm ngoài phạm vi có sẵn trong 2 file.',
+    '',
     'Quy tắc cấm tuyệt đối:',
     '1. Không viết các section rỗng kiểu "Không có", "N/A".',
     '2. Không bịa test đã chạy hoặc motivation không có căn cứ.',
@@ -146,6 +151,7 @@ function buildTargetReferenceSyncPrompt(pairs = []) {
     '9. Không tự sinh các marker của hệ thống (như <!-- ai-review:record:... --> hoặc <!-- ai-review:source-sha:... -->).',
     '10. Chỉ trả về Markdown thuần của record, không bọc ```markdown hoặc kèm lời chào.',
     '11. Không tự chạy execute các file code để test/kiểm tra lỗi với cú pháp của ngôn ngữ lập trình.',
+    '12. Không thêm bất kỳ nội dung linh tinh nào vào file: Tuyệt đối không chèn thêm văn bản review, checklist ngoài lề hoặc các phần giải thích thừa vào nội dung file. Không tự tiện reformat hay normalize khoảng trắng ngoài phạm vi khác biệt thực tế của 2 file.',
     '',
   ];
 

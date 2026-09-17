@@ -2,7 +2,7 @@
 
 ## 1. Project Overview & Architecture
 
-**SkillSyncPro** (`sync_supperpowers_and_tais`) is a dedicated Single Page Application (SPA) Workstation for comparing, auditing differences, resolving conflicts, and synchronizing skills and configurations between **Target Workspace** and **Benchmark Reference** (unifying superpowers and tungnt-ai-skills ecosystems).
+**SkillSyncPro** is a dedicated Single Page Application (SPA) Workstation for comparing, auditing differences, resolving conflicts, and synchronizing skills and configurations between **Target Workspace** and **Benchmark Reference** across unified agent ecosystems.
 
 ### Core Philosophy: Zero-Build Native SPA
 - **Zero-Build Architecture**: Runs directly in any modern browser without bundling or compilation (no Webpack, Vite, Rollup, or Babel required).

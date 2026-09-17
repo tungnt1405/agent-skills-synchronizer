@@ -4,9 +4,64 @@
  * filters, and scan daemon lifecycle.
  */
 
-import { fetchSourceProjects, fetchSourceScan, executeSyncBatch, checkAgentCli } from './source-api.js';
+import {
+  fetchSourceProjects,
+  fetchSourceScan,
+  fetchAvailableAgents,
+  executeSyncBatch,
+  checkAgentCli,
+  fetchDiffPreviewBatch
+} from './source-api.js';
 
 export const EXECUTOR_STEPS = ['prepare', 'preflight', 'backup', 'analyze', 'write', 'ready-for-review'];
+
+export const AGENT_STORAGE_KEY = 'skillsync.executor.agent';
+export const MODEL_STORAGE_KEY = 'skillsync.executor.model';
+
+function getStorageItem(key) {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      return globalThis.localStorage.getItem(key);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+  return null;
+}
+
+function setStorageItem(key, val) {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      globalThis.localStorage.setItem(key, String(val));
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function removeStorageItem(key) {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
+      globalThis.localStorage.removeItem(key);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function isModelInList(models, modelId) {
+  if (!Array.isArray(models) || !modelId) return false;
+  return models.some((m) => {
+    const id = typeof m === 'string' ? m : m?.id;
+    return id === modelId;
+  });
+}
+
+function getFirstModelId(models) {
+  if (!Array.isArray(models) || models.length === 0) return '';
+  const first = models[0];
+  return typeof first === 'string' ? first : first?.id || '';
+}
 
 const EMPTY_SCANNED_STATS = {
   folders: 0,
@@ -359,10 +414,34 @@ function normalizeReviewPath(path) {
   return String(path || '').replace(/^(skills|tais)\//, '');
 }
 
+export function mapPreviewFileToDiffFile(file, session = {}) {
+  const pathValue = file?.path || '';
+  return {
+    id: file?.id || `preview-${cryptoRandomId()}`,
+    path: pathValue,
+    name: file?.name || pathValue.split(/[/\\]/).pop() || 'preview',
+    shortPath: file?.shortPath || pathValue,
+    status: file?.status || 'MODIFIED',
+    hasConflict: false,
+    additions: Number(file?.additions) || 0,
+    deletions: Number(file?.deletions) || 0,
+    size: file?.size || '0 B',
+    sha: file?.sha || file?.refSha || file?.targetSha || 'preview',
+    targetSha: file?.targetSha || '',
+    refSha: file?.refSha || '',
+    targetExists: file?.targetExists !== false,
+    refExists: file?.refExists !== false,
+    targetBranch: session?.targetSource?.branch || 'sources',
+    refBranch: session?.referenceSource?.branch || 'sources',
+    blocks: Array.isArray(file?.blocks) ? file.blocks : []
+  };
+}
+
 class Store {
-  constructor() {
+  constructor(initialState = {}) {
     this.listeners = new Set();
     this._loadOptionsPromise = null;
+    this._loadAgentOptionsPromise = null;
 
     this.state = {
       targetSource: null,
@@ -380,19 +459,30 @@ class Store {
       currentDiffFileId: 'd1',
       activeView: 'workstation',
       diffFiles: JSON.parse(JSON.stringify(INITIAL_DIFF_FILES)),
+      diffMode: 'review',
+      previewDiffStatus: 'idle',
+      previewDiffError: '',
+      previewDiffContext: {
+        path: '',
+        line: null
+      },
       syncSession: createInitialSyncSession(),
       workflowState: 'scanned',
       pendingBatch: null,
       lastBatchError: '',
       draftSavedAt: '',
+      agentOptions: [],
+      agentOptionsStatus: 'idle',
+      agentOptionsError: null,
       targetAgent: 'agy',
+      targetModel: '',
+      executorProvider: 'local-reference-merge-v1',
       activeSyncSession: null,
       executionStatus: 'idle',
       executionError: '',
       failureLog: '',
       missingAgentInfo: null,
       executorState: 'idle',
-      executorProvider: 'local-reference-merge-v1',
       executorProgress: { current: 0, total: 0, percent: 0 },
       executorStep: 'prepare',
       executorSessionId: '',
@@ -406,7 +496,8 @@ class Store {
       syncStatus: 'idle', // 'idle' | 'AIAnalyzing' (STATE-004) | 'Failed_Locked' (STATE-009)
       simulateLockedFailureNext: false, // one-shot QA/demo toggle to force ALT-004 (Target locked) on next applyMerge()
       lastCommitMessage: '',
-      lastSyncFailure: null // { errorType, errorMessage, technicalLog: string[], commitMessage, timestamp } | null
+      lastSyncFailure: null, // { errorType, errorMessage, technicalLog: string[], commitMessage, timestamp } | null
+      ...(initialState && typeof initialState === 'object' && !Array.isArray(initialState) ? initialState : {})
     };
   }
 
@@ -434,11 +525,13 @@ class Store {
 
   /**
    * Notify all registered listeners
+   * @param {string} [event]
+   * @param {*} [data]
    */
-  notify() {
+  notify(event, data) {
     for (const listener of this.listeners) {
       try {
-        listener(this.state);
+        listener(this.state, event, data);
       } catch (err) {
         console.error('Error in store listener:', err);
       }
@@ -904,11 +997,119 @@ class Store {
   }
 
   /**
-   * Set target AI agent ('agy', 'claude', 'copilot', 'codex')
-   * @param {string} agent
+   * Load available AI agent CLIs and initialize selection from capabilities / storage
+   * @param {Function} [fetchImpl=fetch]
+   * @returns {Promise<Array>}
    */
-  setTargetAgent(agent) {
-    this.state.targetAgent = agent;
+  loadAgentOptions(fetchImpl = fetch) {
+    if (this._loadAgentOptionsPromise) {
+      return this._loadAgentOptionsPromise;
+    }
+
+    this._loadAgentOptionsPromise = (async () => {
+      this.state.agentOptionsStatus = 'loading';
+      this.state.agentOptionsError = null;
+      this.notify();
+
+      try {
+        const agents = await fetchAvailableAgents(fetchImpl);
+        const safeAgents = Array.isArray(agents) ? agents : [];
+        this.state.agentOptions = safeAgents;
+        this.state.agentOptionsStatus = 'loaded';
+
+        if (safeAgents.length === 0) {
+          this.state.targetAgent = '';
+          this.state.targetModel = '';
+          this.state.executorProvider = '';
+          removeStorageItem(AGENT_STORAGE_KEY);
+          removeStorageItem(MODEL_STORAGE_KEY);
+        } else {
+          const savedAgentId = getStorageItem(AGENT_STORAGE_KEY);
+          const savedAgent = safeAgents.find((a) => a.id === savedAgentId);
+          const selectedAgent = savedAgent || safeAgents[0];
+
+          this.state.targetAgent = selectedAgent.id;
+          this.state.executorProvider = selectedAgent.provider?.id || selectedAgent.id;
+          setStorageItem(AGENT_STORAGE_KEY, selectedAgent.id);
+
+          if (
+            selectedAgent.modelSelection === 'available' &&
+            Array.isArray(selectedAgent.models) &&
+            selectedAgent.models.length > 0
+          ) {
+            const savedModel = getStorageItem(MODEL_STORAGE_KEY);
+            if (savedModel && isModelInList(selectedAgent.models, savedModel)) {
+              this.state.targetModel = savedModel;
+              setStorageItem(MODEL_STORAGE_KEY, savedModel);
+            } else {
+              const defaultModel = selectedAgent.defaultModel || getFirstModelId(selectedAgent.models);
+              this.state.targetModel = defaultModel;
+              setStorageItem(MODEL_STORAGE_KEY, defaultModel);
+            }
+          } else {
+            this.state.targetModel = '';
+            setStorageItem(MODEL_STORAGE_KEY, '');
+          }
+        }
+      } catch (err) {
+        this.state.agentOptionsStatus = 'error';
+        this.state.agentOptionsError = err.message || String(err);
+      } finally {
+        this._loadAgentOptionsPromise = null;
+      }
+
+      this.notify();
+      return this.state.agentOptions;
+    })();
+
+    return this._loadAgentOptionsPromise;
+  }
+
+  /**
+   * Set target AI agent and update derived executorProvider and targetModel
+   * @param {string} agentId
+   */
+  setTargetAgent(agentId) {
+    const cleanAgentId = typeof agentId === 'string' ? agentId.trim() : '';
+    const agent = (this.state.agentOptions || []).find((a) => a.id === cleanAgentId);
+
+    if (agent) {
+      this.state.targetAgent = agent.id;
+      this.state.executorProvider = agent.provider?.id || agent.id;
+      setStorageItem(AGENT_STORAGE_KEY, agent.id);
+
+      if (
+        agent.modelSelection === 'available' &&
+        Array.isArray(agent.models) &&
+        agent.models.length > 0
+      ) {
+        if (this.state.targetModel && isModelInList(agent.models, this.state.targetModel)) {
+          setStorageItem(MODEL_STORAGE_KEY, this.state.targetModel);
+        } else {
+          const defaultModel = agent.defaultModel || getFirstModelId(agent.models);
+          this.state.targetModel = defaultModel;
+          setStorageItem(MODEL_STORAGE_KEY, defaultModel);
+        }
+      } else {
+        this.state.targetModel = '';
+        setStorageItem(MODEL_STORAGE_KEY, '');
+      }
+    } else {
+      this.state.targetAgent = cleanAgentId || agentId;
+      setStorageItem(AGENT_STORAGE_KEY, this.state.targetAgent);
+    }
+
+    this.notify();
+  }
+
+  /**
+   * Set target model override for current agent
+   * @param {string} modelId
+   */
+  setTargetModel(modelId) {
+    const clean = typeof modelId === 'string' ? modelId.trim() : '';
+    this.state.targetModel = clean;
+    setStorageItem(MODEL_STORAGE_KEY, clean);
     this.notify();
   }
 
@@ -960,6 +1161,10 @@ class Store {
     this.state.missingAgentInfo = null;
     this.state.syncStatus = 'idle';
     this.state.lastSyncFailure = null;
+    this.state.diffMode = 'review';
+    this.state.previewDiffStatus = 'idle';
+    this.state.previewDiffError = '';
+    this.state.previewDiffContext = { path: '', line: null };
     this.state.workflowState = (this.state.scanStatus === 'scanned' ? 'scanned' : 'idle');
     this.notify();
   }
@@ -980,6 +1185,21 @@ class Store {
       return null;
     }
 
+    if (!this.state.targetAgent || (this.state.agentOptionsStatus === 'loaded' && this.state.agentOptions.length === 0)) {
+      const errMsg = 'No usable AI Agent CLI available to execute sync.';
+      this.state.executorState = 'execution-failed';
+      this.state.executionStatus = 'failed';
+      this.state.workflowState = 'failed-locked';
+      this.state.failedStep = 'preflight';
+      this.state.errorCode = 'NO_AGENT_AVAILABLE';
+      this.state.executionError = errMsg;
+      this.state.lastBatchError = errMsg;
+      this.notify('sync-failed', { error: errMsg, code: 'NO_AGENT_AVAILABLE' });
+      const localErr = new Error(errMsg);
+      localErr.code = 'NO_AGENT_AVAILABLE';
+      throw localErr;
+    }
+
     this.state.executorState = 'preparing';
     this.state.executorStep = 'prepare';
     this.state.executorProgress = { current: 0, total: (this.state.pendingBatch.selectedFiles || []).length, percent: 0 };
@@ -994,15 +1214,22 @@ class Store {
     this.state.workflowState = 'ai-analyzing';
     this.notify();
 
+    const selectedAgent = Array.isArray(this.state.agentOptions)
+      ? this.state.agentOptions.find((a) => a.id === this.state.targetAgent)
+      : null;
+    const providerId = selectedAgent?.provider?.id || this.state.executorProvider || 'local-reference-merge-v1';
+    const aiEngine = {
+      provider: providerId,
+      agent: this.state.targetAgent || 'local',
+      requestedBy: 'workstation',
+      contractVersion: '1',
+      ...(this.state.targetModel ? { model: this.state.targetModel } : {})
+    };
+
     const payload = {
       ...this.state.pendingBatch,
       agent: this.state.targetAgent || 'local',
-      aiEngine: {
-        provider: this.state.executorProvider || 'local-reference-merge-v1',
-        agent: this.state.targetAgent || 'local',
-        requestedBy: 'workstation',
-        contractVersion: '1'
-      },
+      aiEngine,
       options: {
         createBackup: true,
         preserveTargetStructure: true,
@@ -1045,6 +1272,10 @@ class Store {
       this.state.executorSessionId = session.syncSessionId || session.id || '';
       this.state.executorProgress = { current: changedCount, total: changedCount, percent: 100 };
       this.state.activeSyncSession = session;
+      this.state.diffMode = 'review';
+      this.state.previewDiffStatus = 'idle';
+      this.state.previewDiffError = '';
+      this.state.previewDiffContext = { path: '', line: null };
       this.state.diffFiles = (session.changedFiles || []).map((file) => mapChangedFileToDiffFile(file, session));
       this.state.currentDiffFileId = this.state.diffFiles[0]?.id || '';
 
@@ -1106,6 +1337,106 @@ class Store {
       this.notify();
       return null;
     }
+  }
+
+  /**
+   * Alias for executePendingBatch (Phase 3 contract)
+   * @param {object|Function} [fetchImpl=fetch]
+   * @returns {Promise<object|null>}
+   */
+  startSyncBatch(fetchImpl = fetch) {
+    return this.executePendingBatch(fetchImpl);
+  }
+
+  /**
+   * Open diff preview for multiple files from workstation scan results (read-only)
+   * @param {Array<string>} filePaths
+   * @param {object} [options={}]
+   * @returns {Promise<Array<object>|null>}
+   */
+  async openPreviewDiffBatch(filePaths, options = {}) {
+    const rawPaths = Array.isArray(filePaths) ? filePaths : [filePaths];
+    const validPaths = Array.from(new Set(
+      rawPaths
+        .map(p => (typeof p === 'string' ? p.trim() : (p?.path ? String(p.path).trim() : '')))
+        .filter(Boolean)
+    ));
+
+    if (validPaths.length === 0) {
+      this.state.previewDiffStatus = 'error';
+      this.state.previewDiffError = 'Vui lòng chọn ít nhất một file diff để xem chi tiết.';
+      this.notify();
+      return null;
+    }
+
+    if (!this.state.targetSource?.repo || !this.state.referenceSource?.repo) {
+      this.state.previewDiffStatus = 'error';
+      this.state.previewDiffError = 'Vui lòng chọn Target và Reference hợp lệ trước khi xem diff.';
+      this.notify();
+      return null;
+    }
+
+    this.state.diffMode = 'preview';
+    this.state.previewDiffStatus = 'loading';
+    this.state.previewDiffError = '';
+    this.state.previewDiffContext = {
+      paths: validPaths,
+      path: validPaths[0],
+      line: Number.isFinite(options.line) ? options.line : null
+    };
+    this.notify();
+
+    try {
+      const fetchImpl = typeof options === 'function' ? options : (typeof options?.fetchImpl === 'function' ? options.fetchImpl : undefined);
+      const preview = await fetchDiffPreviewBatch(
+        this.state.targetSource.repo,
+        this.state.referenceSource.repo,
+        validPaths,
+        fetchImpl
+      );
+
+      if (!preview?.files || preview.files.length === 0) {
+        throw new Error('Không nhận được dữ liệu diff preview hợp lệ.');
+      }
+
+      // Check for race condition / cancellation
+      const currentPaths = this.state.previewDiffContext?.paths || [];
+      if (currentPaths.length !== validPaths.length || currentPaths.some((p, i) => p !== validPaths[i])) {
+        return null;
+      }
+
+      const diffFiles = preview.files.map(file => mapPreviewFileToDiffFile(file, preview));
+      this.state.diffFiles = diffFiles;
+      this.state.currentDiffFileId = diffFiles[0]?.id || '';
+      this.state.previewDiffStatus = 'loaded';
+      this.state.previewDiffError = '';
+      this.state.activeView = 'diff-inspector';
+      this.notify();
+      return diffFiles;
+    } catch (err) {
+      const currentPaths = this.state.previewDiffContext?.paths || [];
+      if (currentPaths.length !== validPaths.length || currentPaths.some((p, i) => p !== validPaths[i])) {
+        return null;
+      }
+      this.state.diffMode = 'review';
+      this.state.previewDiffStatus = 'error';
+      this.state.previewDiffError = err.message || 'Không thể tải diff preview.';
+      this.state.activeView = 'workstation';
+      this.notify();
+      return null;
+    }
+  }
+
+  /**
+   * Open diff preview for a single file (backward-compatibility wrapper)
+   * @param {string|Array<string>} filePath
+   * @param {object} [options={}]
+   * @returns {Promise<object|null>}
+   */
+  async openPreviewDiff(filePath, options = {}) {
+    const paths = Array.isArray(filePath) ? filePath : [filePath];
+    const files = await this.openPreviewDiffBatch(paths, options);
+    return files && files.length > 0 ? files[0] : null;
   }
 
   /**
@@ -1388,12 +1719,15 @@ class Store {
 
 // Export singleton instance
 export const appStore = new Store();
+export { Store, Store as SkillSyncStore };
 
 // Expose globally for browser environments without native ES module support
 if (typeof window !== 'undefined') {
   window.appStore = appStore;
   window.mapChangedFileToDiffFile = mapChangedFileToDiffFile;
   window.EXECUTOR_STEPS = EXECUTOR_STEPS;
+  window.AGENT_STORAGE_KEY = AGENT_STORAGE_KEY;
+  window.MODEL_STORAGE_KEY = MODEL_STORAGE_KEY;
 }
 
 export default appStore;

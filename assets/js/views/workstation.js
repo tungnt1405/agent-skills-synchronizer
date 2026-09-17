@@ -330,6 +330,64 @@ export function renderWorkstation(container, store) {
             </div>
           </div>
 
+          <!-- Agent CLI, Provider & Model Controls -->
+          <div id="executor-controls-panel" class="space-y-3 pt-1">
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+              <!-- Agent CLI Select & Refresh -->
+              <div class="md:col-span-5 space-y-1.5">
+                <div class="flex items-center justify-between">
+                  <label for="executor-agent-select" class="text-xs uppercase font-semibold text-slate-300 tracking-wider flex items-center gap-1.5">
+                    <span class="material-symbols-outlined text-[15px] text-indigo-400">terminal</span>
+                    <span>Agent CLI</span>
+                  </label>
+                </div>
+                <div class="flex items-center gap-2">
+                  <div class="relative flex-1">
+                    <select id="executor-agent-select" aria-label="Chọn AI Agent CLI" aria-describedby="executor-provider-help" class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus:border-primary focus:ring-1 focus:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-all cursor-pointer appearance-none pr-8">
+                    </select>
+                    <span class="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-[16px]">
+                      unfold_more
+                    </span>
+                  </div>
+                  <button id="btn-refresh-agents" type="button" aria-label="Làm mới danh sách AI Agent" title="Làm mới danh sách AI Agent" class="p-2 rounded-lg bg-surface-container hover:bg-surface-container-high border border-slate-700 hover:border-slate-600 text-slate-300 hover:text-white transition-all cursor-pointer flex items-center justify-center shrink-0">
+                    <span id="refresh-agents-icon" class="material-symbols-outlined text-[16px]">refresh</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Read-only Provider Display -->
+              <div class="md:col-span-3 space-y-1.5">
+                <span class="text-xs uppercase font-semibold text-slate-300 tracking-wider flex items-center gap-1.5">
+                  <span class="material-symbols-outlined text-[15px] text-amber-400">hub</span>
+                  <span>Provider</span>
+                </span>
+                <div id="executor-provider-display" class="w-full bg-surface-container/60 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-300 truncate" aria-readonly="true" title="Provider được xác định theo Agent">
+                  -
+                </div>
+              </div>
+
+              <!-- Model Select -->
+              <div class="md:col-span-4 space-y-1.5">
+                <label for="executor-model-select" class="text-xs uppercase font-semibold text-slate-300 tracking-wider flex items-center gap-1.5">
+                  <span class="material-symbols-outlined text-[15px] text-sky-400">psychology</span>
+                  <span>Model</span>
+                </label>
+                <div class="relative">
+                  <select id="executor-model-select" aria-label="Chọn Model" aria-describedby="executor-provider-help" class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus:border-primary focus:ring-1 focus:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-all cursor-pointer appearance-none pr-8">
+                  </select>
+                  <span class="material-symbols-outlined absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-[16px]">
+                    unfold_more
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Approved Guidance Notice -->
+            <p id="executor-provider-help" class="text-[11px] text-slate-400">
+              Provider được xác định theo Agent CLI. Chọn Agent để đổi Provider; sau đó chọn Model nếu Agent hỗ trợ liệt kê model.
+            </p>
+          </div>
+
           <!-- Progress Bar & Current Step Message -->
           <div class="space-y-1.5">
             <div class="flex items-center justify-between text-xs font-mono">
@@ -434,6 +492,17 @@ export function renderWorkstation(container, store) {
 
       </div>
 
+      <!-- Diff Preview Error Toast -->
+      <div id="workstation-diff-error-toast" class="hidden shrink-0 bg-rose-950/90 border-t border-rose-500/50 px-6 py-2.5 text-xs text-rose-200 flex items-center justify-between z-20 transition-all shadow-md" role="alert">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-rose-400 text-[18px]">error</span>
+          <span id="workstation-diff-error-message">Không thể tải diff preview.</span>
+        </div>
+        <button id="btn-close-diff-error-toast" type="button" class="text-rose-400 hover:text-white text-xs cursor-pointer p-1 rounded hover:bg-rose-900/50 flex items-center gap-1" aria-label="Đóng thông báo">
+          <span class="material-symbols-outlined text-[16px]">close</span>
+        </button>
+      </div>
+
       <!-- 5. Footer Status Bar (Sticky at View bottom) -->
       <footer id="workstation-summary" data-testid="workstation-summary" class="shrink-0 p-3 sm:px-6 bg-surface-container-low/95 backdrop-blur-md border-t border-slate-800 flex items-center justify-between flex-wrap gap-3 z-10">
         <!-- Left: Status summary dots & counts -->
@@ -463,7 +532,7 @@ export function renderWorkstation(container, store) {
         <!-- Right: Action CTA Buttons -->
         <div class="flex items-center gap-2.5">
           <!-- Secondary Action -->
-          <button id="btn-view-diff" type="button" class="bg-surface-container hover:bg-surface-container-high border border-slate-700 hover:border-slate-600 text-slate-200 hover:text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer shadow-sm active:scale-95">
+          <button id="btn-view-diff" type="button" disabled class="bg-surface-container opacity-50 cursor-not-allowed border border-slate-700 hover:border-slate-600 text-slate-200 hover:text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all shadow-sm" title="Vui lòng lấy danh sách so sánh và chọn tệp để xem diff">
             <span class="material-symbols-outlined text-[16px] text-slate-400">difference</span>
             <span>Xem chi tiết diff</span>
           </button>
@@ -514,6 +583,9 @@ export function renderWorkstation(container, store) {
   const footerMissingCount = container.querySelector('#footer-missing-count');
   const footerSelectedCount = container.querySelector('#footer-selected-count');
   const footerDiffsCount = container.querySelector('#footer-diffs-count');
+  const workstationDiffErrorToast = container.querySelector('#workstation-diff-error-toast');
+  const workstationDiffErrorMessage = container.querySelector('#workstation-diff-error-message');
+  const btnCloseDiffErrorToast = container.querySelector('#btn-close-diff-error-toast');
   const btnViewDiff = container.querySelector('#btn-view-diff');
   const btnSyncNow = container.querySelector('#btn-sync-now');
 
@@ -532,6 +604,11 @@ export function renderWorkstation(container, store) {
   const executorProgressbarFill = container.querySelector('#executor-progressbar-fill');
   const executorStepIndicator = container.querySelector('#executor-step-indicator');
   const executorStateControls = container.querySelector('#executor-state-controls');
+  const executorAgentSelect = container.querySelector('#executor-agent-select');
+  const btnRefreshAgents = container.querySelector('#btn-refresh-agents');
+  const refreshAgentsIcon = container.querySelector('#refresh-agents-icon');
+  const executorProviderDisplay = container.querySelector('#executor-provider-display');
+  const executorModelSelect = container.querySelector('#executor-model-select');
 
   /**
    * Populate repo dropdown options
@@ -682,6 +759,13 @@ export function renderWorkstation(container, store) {
         ? `<input type="checkbox" class="file-checkbox accent-indigo-500 shrink-0 ${fileDisabledClass}" data-file-path="${escapeHtml(file.path)}" ${checked ? 'checked' : ''} ${fileDisabledAttr} aria-checked="${String(checked)}" aria-label="Chọn ${escapeHtml(file.path)}">`
         : `<span class="w-4 h-4 shrink-0" aria-hidden="true"></span>`;
 
+      const canPreviewDiff = file.refExists && file.status !== 'synced' && file.status !== 'target-only';
+      const previewButtonHtml = canPreviewDiff
+        ? `<button type="button" class="btn-row-view-diff px-2 py-1 rounded border border-slate-700 text-[11px] text-slate-300 hover:text-white hover:border-primary/50 focus-visible:ring-2 focus-visible:ring-primary cursor-pointer" data-file-path="${escapeHtml(file.path)}" aria-label="Xem chi tiết diff ${escapeHtml(file.path)}">
+      <span class="material-symbols-outlined text-[14px]">difference</span>
+    </button>`
+        : '';
+
       // Build Left (Target) Cell
       let targetCellContent = '';
       if (file.targetExists) {
@@ -778,6 +862,7 @@ export function renderWorkstation(container, store) {
           </div>
           <div class="flex items-center gap-2 shrink-0">
             ${badgeHtml}
+            ${previewButtonHtml}
           </div>
         `;
       } else {
@@ -1030,6 +1115,190 @@ export function renderWorkstation(container, store) {
   }
 
   /**
+   * Populate AI Agent CLI and Model dropdowns, and update read-only Provider display
+   * @param {object} state
+   */
+  function populateAgentAndModelControls(state) {
+    if (!executorAgentSelect || !executorModelSelect || !executorProviderDisplay) return;
+
+    const isRunning = RUNNING_STATES.includes(state.executorState);
+    const status = state.agentOptionsStatus || 'idle';
+    const agents = Array.isArray(state.agentOptions) ? state.agentOptions : [];
+    const currentAgent = agents.find((a) => a.id === state.targetAgent);
+
+    // 1. Refresh Button icon animation and disabled state
+    if (btnRefreshAgents) {
+      btnRefreshAgents.disabled = status === 'loading' || isRunning;
+      btnRefreshAgents.classList.toggle('opacity-50', btnRefreshAgents.disabled);
+      btnRefreshAgents.classList.toggle('cursor-not-allowed', btnRefreshAgents.disabled);
+    }
+    if (refreshAgentsIcon) {
+      if (status === 'loading') {
+        refreshAgentsIcon.classList.add('animate-spin');
+      } else {
+        refreshAgentsIcon.classList.remove('animate-spin');
+      }
+    }
+
+    // 2. Provider Display
+    if (status === 'loading') {
+      executorProviderDisplay.textContent = 'Đang tải...';
+    } else if (status === 'error') {
+      executorProviderDisplay.textContent = 'Không khả dụng';
+    } else if (status === 'loaded' && agents.length === 0) {
+      executorProviderDisplay.textContent = 'Chưa có Agent';
+    } else if (currentAgent) {
+      const providerVal = typeof currentAgent.provider === 'object'
+        ? (currentAgent.provider?.label || currentAgent.provider?.id)
+        : currentAgent.provider;
+      executorProviderDisplay.textContent = providerVal || state.executorProvider || '-';
+    } else {
+      executorProviderDisplay.textContent = state.executorProvider || '-';
+    }
+
+    // 3. Agent CLI Select
+    if (status === 'loading') {
+      executorAgentSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Đang tải danh sách AI Agent...';
+      executorAgentSelect.appendChild(opt);
+      executorAgentSelect.value = '';
+      executorAgentSelect.disabled = true;
+    } else if (status === 'error') {
+      executorAgentSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Lỗi nạp danh sách Agent';
+      executorAgentSelect.appendChild(opt);
+      executorAgentSelect.value = '';
+      executorAgentSelect.disabled = true;
+    } else if (status === 'loaded' && agents.length === 0) {
+      executorAgentSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Không có Agent CLI khả dụng';
+      executorAgentSelect.appendChild(opt);
+      executorAgentSelect.value = '';
+      executorAgentSelect.disabled = true;
+    } else {
+      const agentIds = agents.map((a) => a.id);
+      const currentValues = Array.from(executorAgentSelect.options).map((opt) => opt.value);
+      const isIdentical =
+        currentValues.length === agentIds.length &&
+        currentValues.every((val, idx) => val === agentIds[idx]);
+
+      if (!isIdentical) {
+        executorAgentSelect.innerHTML = '';
+        agents.forEach((agent) => {
+          const opt = document.createElement('option');
+          opt.value = agent.id;
+          opt.textContent = agent.label || agent.id;
+          if (agent.id === state.targetAgent) opt.selected = true;
+          executorAgentSelect.appendChild(opt);
+        });
+      }
+
+      if (executorAgentSelect.value !== (state.targetAgent || '')) {
+        executorAgentSelect.value = state.targetAgent || '';
+      }
+
+      executorAgentSelect.disabled = isRunning;
+    }
+    executorAgentSelect.classList.toggle('opacity-50', executorAgentSelect.disabled);
+    executorAgentSelect.classList.toggle('cursor-not-allowed', executorAgentSelect.disabled);
+
+    // 4. Model Select
+    if (status === 'loading') {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Đang tải model...';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    } else if (status === 'error') {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Không khả dụng';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    } else if (status === 'loaded' && agents.length === 0) {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Không có model';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    } else if (!currentAgent) {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'Chưa chọn Agent';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    } else if (currentAgent.modelSelection === 'agent-default') {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(Mặc định của Agent)';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    } else if (currentAgent.modelSelection === 'available') {
+      const models = Array.isArray(currentAgent.models) ? currentAgent.models : [];
+      if (models.length === 0) {
+        executorModelSelect.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = '(Mặc định của Agent)';
+        executorModelSelect.appendChild(opt);
+        executorModelSelect.value = '';
+        executorModelSelect.disabled = true;
+      } else {
+        const modelIds = models.map((m) => (typeof m === 'string' ? m : m?.id));
+        const currentModelValues = Array.from(executorModelSelect.options).map((opt) => opt.value);
+        const isIdentical =
+          currentModelValues.length === modelIds.length &&
+          currentModelValues.every((val, idx) => val === modelIds[idx]);
+
+        if (!isIdentical) {
+          executorModelSelect.innerHTML = '';
+          models.forEach((m) => {
+            const mId = typeof m === 'string' ? m : m.id;
+            const mLabel = (typeof m === 'object' && m.label) ? m.label : mId;
+            const opt = document.createElement('option');
+            opt.value = mId;
+            opt.textContent = mLabel;
+            if (mId === state.targetModel) opt.selected = true;
+            executorModelSelect.appendChild(opt);
+          });
+        }
+
+        if (executorModelSelect.value !== (state.targetModel || '')) {
+          executorModelSelect.value = state.targetModel || '';
+        }
+
+        executorModelSelect.disabled = isRunning;
+      }
+    } else {
+      executorModelSelect.innerHTML = '';
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = '(Mặc định của Agent)';
+      executorModelSelect.appendChild(opt);
+      executorModelSelect.value = '';
+      executorModelSelect.disabled = true;
+    }
+    executorModelSelect.classList.toggle('opacity-50', executorModelSelect.disabled);
+    executorModelSelect.classList.toggle('cursor-not-allowed', executorModelSelect.disabled);
+  }
+
+  /**
    * Updates all Executor Panel elements based on state
    */
   function updateExecutorPanel(state) {
@@ -1092,6 +1361,9 @@ export function renderWorkstation(container, store) {
 
     // Step Indicator
     renderExecutorSteps(state);
+
+    // Agent, Provider, and Model Controls
+    populateAgentAndModelControls(state);
 
     // State-specific Controls
     renderExecutorStateControls(state);
@@ -1239,9 +1511,10 @@ export function renderWorkstation(container, store) {
       footerDiffsCount.textContent = stats.diffs || 0;
     }
 
-    // 7. Sync button state based on scan status, selected files, and running state
+    // 7. Sync button state based on scan status, selected files, running state, and agent capabilities
     const selectedCount = (state.selectedFiles || []).length;
-    const canStartBatch = state.scanStatus === 'scanned' && selectedCount > 0 && !isRunning;
+    const hasLoadedAgents = state.agentOptionsStatus === 'loaded' && Array.isArray(state.agentOptions) && state.agentOptions.length > 0;
+    const canStartBatch = state.scanStatus === 'scanned' && selectedCount > 0 && !isRunning && hasLoadedAgents;
     btnSyncNow.disabled = !canStartBatch || isRunning;
     btnSyncNow.classList.toggle('opacity-50', !canStartBatch || isRunning);
     btnSyncNow.classList.toggle('cursor-not-allowed', !canStartBatch || isRunning);
@@ -1253,6 +1526,52 @@ export function renderWorkstation(container, store) {
         syncLabelEl.textContent = selectedCount > 0
           ? `Đồng bộ ${selectedCount} file`
           : 'Đồng bộ ngay';
+      }
+    }
+
+    // Update Diff Preview CTA button based on selected diff files and scan state
+    const diffLabelEl = btnViewDiff.querySelector('span:last-child');
+    if (diffLabelEl) {
+      const selectedSet = new Set(state.selectedFiles || []);
+      const allFiles = Array.isArray(state.fileTrees) ? state.fileTrees : (Array.isArray(state.files) ? state.files : []);
+      const selectedDiffsCount = allFiles.filter(f => selectedSet.has(f.path) && f.refExists && f.status !== 'synced' && f.status !== 'target-only').length;
+      const canPreview = state.scanStatus === 'scanned' && selectedDiffsCount > 0 && !isRunning;
+
+      if (state.previewDiffStatus === 'loading') {
+        diffLabelEl.textContent = 'Đang tải diff...';
+        btnViewDiff.disabled = true;
+        btnViewDiff.classList.add('opacity-70', 'cursor-wait');
+        btnViewDiff.classList.remove('opacity-50', 'cursor-not-allowed', 'cursor-pointer', 'active:scale-95');
+        btnViewDiff.title = 'Đang tải diff...';
+      } else if (canPreview) {
+        btnViewDiff.disabled = false;
+        btnViewDiff.classList.remove('opacity-50', 'opacity-70', 'cursor-not-allowed', 'cursor-wait');
+        btnViewDiff.classList.add('cursor-pointer', 'active:scale-95');
+        if (selectedDiffsCount > 1) {
+          diffLabelEl.textContent = `Xem diff (${selectedDiffsCount} file)`;
+          btnViewDiff.title = `Xem trước diff cho ${selectedDiffsCount} tệp đã chọn`;
+        } else {
+          diffLabelEl.textContent = 'Xem chi tiết diff';
+          btnViewDiff.title = 'Xem chi tiết diff cho tệp đã chọn';
+        }
+      } else {
+        btnViewDiff.disabled = true;
+        btnViewDiff.classList.add('opacity-50', 'cursor-not-allowed');
+        btnViewDiff.classList.remove('opacity-70', 'cursor-wait', 'cursor-pointer', 'active:scale-95');
+        diffLabelEl.textContent = 'Xem chi tiết diff';
+        btnViewDiff.title = state.scanStatus !== 'scanned'
+          ? 'Vui lòng lấy danh sách so sánh trước khi xem diff'
+          : 'Vui lòng chọn ít nhất một tệp để xem diff';
+      }
+    }
+
+    // Update Diff Preview Error Toast
+    if (workstationDiffErrorToast && workstationDiffErrorMessage) {
+      if (state.previewDiffStatus === 'error' && state.previewDiffError) {
+        workstationDiffErrorMessage.textContent = state.previewDiffError;
+        workstationDiffErrorToast.classList.remove('hidden');
+      } else {
+        workstationDiffErrorToast.classList.add('hidden');
       }
     }
 
@@ -1281,6 +1600,9 @@ export function renderWorkstation(container, store) {
   // Trigger initial load inside renderWorkstation
   if (typeof store.loadSourceOptions === 'function') {
     store.loadSourceOptions();
+  }
+  if (typeof store.loadAgentOptions === 'function') {
+    store.loadAgentOptions();
   }
 
   // Initial render
@@ -1313,6 +1635,37 @@ export function renderWorkstation(container, store) {
     store.setReferenceRepo(e.target.value);
   });
 
+  // Agent CLI and Model Event Listeners
+  const onAgentChange = (e) => {
+    if (typeof store.setTargetAgent === 'function') {
+      store.setTargetAgent(e.target.value);
+    }
+  };
+
+  const onModelChange = (e) => {
+    if (typeof store.setTargetModel === 'function') {
+      store.setTargetModel(e.target.value);
+    }
+  };
+
+  const onRefreshAgentsClick = () => {
+    if (btnRefreshAgents && btnRefreshAgents.disabled) return;
+    if (RUNNING_STATES.includes(store.getState().executorState)) return;
+    if (typeof store.loadAgentOptions === 'function') {
+      store.loadAgentOptions();
+    }
+  };
+
+  if (executorAgentSelect) {
+    executorAgentSelect.addEventListener('change', onAgentChange);
+  }
+  if (executorModelSelect) {
+    executorModelSelect.addEventListener('change', onModelChange);
+  }
+  if (btnRefreshAgents) {
+    btnRefreshAgents.addEventListener('click', onRefreshAgentsClick);
+  }
+
   // Swap Sources with icon rotation effect
   let swapDeg = 0;
   btnSwapSources.addEventListener('click', () => {
@@ -1338,12 +1691,48 @@ export function renderWorkstation(container, store) {
     });
   });
 
+  // Diff Error Toast Dismiss
+  if (btnCloseDiffErrorToast) {
+    btnCloseDiffErrorToast.addEventListener('click', () => {
+      if (workstationDiffErrorToast) {
+        workstationDiffErrorToast.classList.add('hidden');
+      }
+    });
+  }
+
   // Footer Buttons Event Dispatch
   btnViewDiff.addEventListener('click', () => {
-    container.dispatchEvent(new CustomEvent('skillsync:view-diff', {
-      bubbles: true,
-      detail: store.getState()
-    }));
+    if (btnViewDiff.disabled) return;
+    const state = store.getState();
+    if (RUNNING_STATES.includes(state.executorState) || state.previewDiffStatus === 'loading') return;
+    const selected = new Set(state.selectedFiles || []);
+    const allFiles = Array.isArray(state.fileTrees) ? state.fileTrees : (Array.isArray(state.files) ? state.files : []);
+    const selectedCandidates = allFiles.filter((file) => selected.has(file.path) && file.refExists && file.status !== 'synced' && file.status !== 'target-only');
+
+    if (selectedCandidates.length === 0) return;
+
+    if (selectedCandidates.length > 1) {
+      container.dispatchEvent(new CustomEvent('skillsync:view-diff', {
+        bubbles: true,
+        detail: {
+          mode: 'preview',
+          paths: selectedCandidates.map(f => f.path),
+          path: selectedCandidates[0].path,
+          line: null
+        }
+      }));
+    } else {
+      const candidate = selectedCandidates[0];
+      container.dispatchEvent(new CustomEvent('skillsync:view-diff', {
+        bubbles: true,
+        detail: {
+          mode: 'preview',
+          paths: [candidate.path],
+          path: candidate.path,
+          line: null
+        }
+      }));
+    }
   });
 
   btnSyncNow.addEventListener('click', () => {
@@ -1357,6 +1746,22 @@ export function renderWorkstation(container, store) {
 
   // Delegated click listeners for Workstation Executor Panel controls
   const onContainerClick = (e) => {
+    const rowPreviewBtn = e.target.closest('.btn-row-view-diff');
+    if (rowPreviewBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (RUNNING_STATES.includes(store.getState().executorState)) return;
+      container.dispatchEvent(new CustomEvent('skillsync:view-diff', {
+        bubbles: true,
+        detail: {
+          mode: 'preview',
+          path: rowPreviewBtn.getAttribute('data-file-path'),
+          line: null
+        }
+      }));
+      return;
+    }
+
     const openDiffBtn = e.target.closest('#btn-open-diff-inspector') || e.target.closest('[data-testid="btn-open-diff-inspector"]');
     if (openDiffBtn) {
       e.stopPropagation();
@@ -1398,6 +1803,15 @@ export function renderWorkstation(container, store) {
 
   const cleanup = () => {
     container.removeEventListener('click', onContainerClick);
+    if (executorAgentSelect) {
+      executorAgentSelect.removeEventListener('change', onAgentChange);
+    }
+    if (executorModelSelect) {
+      executorModelSelect.removeEventListener('change', onModelChange);
+    }
+    if (btnRefreshAgents) {
+      btnRefreshAgents.removeEventListener('click', onRefreshAgentsClick);
+    }
     if (typeof unsubscribe === 'function') {
       unsubscribe();
     }
