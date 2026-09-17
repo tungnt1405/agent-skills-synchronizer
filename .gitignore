@@ -7,6 +7,7 @@ docs/tungnt-ai-skills
 # Dynamic Sync Artifacts & Safety Backups
 backup/
 results/
+.skillsync/
 
 # Dependencies & Package Managers
 node_modules/
@@ -15,6 +16,7 @@ package-lock.json.bak
 # Runtime Caches & Temporary Files
 .cache/
 .copilot/
+.playwright-mcp/
 scratch/
 tmp/
 temp/
@@ -53,3 +55,4 @@ Desktop.ini
 # Test Coverage & Reports
 coverage/
 .nyc_output/
+tests/.tmp*

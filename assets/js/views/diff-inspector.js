@@ -113,6 +113,8 @@ export function renderDiffInspector(container, store) {
           </span>
         </div>
 
+        <div id="diff-mode-badge" class="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-semibold shrink-0"></div>
+
         <div id="diff-review-status" class="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs font-semibold text-emerald-300 shrink-0">
           <span class="material-symbols-outlined text-[15px]">verified</span>
           <span>All checks passed</span>
@@ -212,8 +214,15 @@ export function renderDiffInspector(container, store) {
             <button id="btn-close-toast" class="text-emerald-400 hover:text-white text-xs cursor-pointer">Đóng</button>
           </div>
 
+          <div id="diff-preview-notice" class="hidden shrink-0 bg-sky-950/70 border-t border-sky-500/30 px-4 py-2 text-xs font-mono text-sky-300 items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="material-symbols-outlined text-[16px] text-sky-400">visibility</span>
+              <span>Preview chỉ đọc, chưa ghi Target. Chạy đồng bộ để tạo review batch.</span>
+            </div>
+          </div>
+
           <!-- Bottom Commit & Merge Action Bar -->
-          <footer class="shrink-0 bg-surface-container-low border-t border-slate-800 p-3 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 select-none z-10">
+          <footer id="diff-merge-action-footer" class="shrink-0 bg-surface-container-low border-t border-slate-800 p-3 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-3 select-none z-10">
             <!-- Commit Message Input -->
             <div class="flex items-center gap-2.5 w-full sm:w-auto">
               <div class="w-7 h-7 rounded-lg bg-surface-container text-slate-400 flex items-center justify-center shrink-0 border border-slate-700">
@@ -283,6 +292,7 @@ export function renderDiffInspector(container, store) {
 
   const diffTargetSourceBadge = container.querySelector('#diff-target-source-badge');
   const diffReferenceSourceBadge = container.querySelector('#diff-reference-source-badge');
+  const diffModeBadge = container.querySelector('#diff-mode-badge');
   const diffReviewStatus = container.querySelector('#diff-review-status');
 
   const diffFilesTotalCount = container.querySelector('#diff-files-total-count');
@@ -295,6 +305,7 @@ export function renderDiffInspector(container, store) {
   const currentDiffSize = container.querySelector('#current-diff-size');
   const currentDiffConflictSummary = container.querySelector('#current-diff-conflict-summary');
 
+  const diffViewerScrollArea = container.querySelector('#diff-viewer-scroll-area');
   const diffHeaderTargetBranch = container.querySelector('#diff-header-target-branch');
   const diffHeaderRefBranch = container.querySelector('#diff-header-ref-branch');
   const diffCodeRowsContainer = container.querySelector('#diff-code-rows-container');
@@ -302,6 +313,8 @@ export function renderDiffInspector(container, store) {
   const diffMergeToast = container.querySelector('#diff-merge-toast');
   const diffMergeToastMessage = container.querySelector('#diff-merge-toast-message');
   const btnCloseToast = container.querySelector('#btn-close-toast');
+  const diffPreviewNotice = container.querySelector('#diff-preview-notice');
+  const mergeActionFooter = container.querySelector('#diff-merge-action-footer');
 
   if (btnCloseToast && diffMergeToast) {
     btnCloseToast.addEventListener('click', () => {
@@ -423,8 +436,8 @@ export function renderDiffInspector(container, store) {
       `;
     }
 
-    diffHeaderTargetBranch.textContent = currentFile.targetBranch;
-    diffHeaderRefBranch.textContent = currentFile.refBranch;
+    if (diffHeaderTargetBranch) diffHeaderTargetBranch.textContent = currentFile.targetBranch || 'sources';
+    if (diffHeaderRefBranch) diffHeaderRefBranch.textContent = currentFile.refBranch || 'sources';
   }
 
   /**
@@ -530,15 +543,20 @@ export function renderDiffInspector(container, store) {
           <div class="divide-y divide-amber-500/20 font-mono text-xs"></div>
         `;
 
-        // Attach action handlers for conflict buttons
+        // Attach action handlers for conflict buttons (hidden in preview mode)
+        const isPreviewMode = store.getState()?.diffMode === 'preview';
         const actionButtons = conflictBox.querySelectorAll('.btn-conflict-action');
-        actionButtons.forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            const action = btn.getAttribute('data-action');
-            store.resolveConflict(currentFile.id, block.id, action);
+        if (isPreviewMode) {
+          actionButtons.forEach(btn => btn.classList.add('hidden'));
+        } else {
+          actionButtons.forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              const action = btn.getAttribute('data-action');
+              store.resolveConflict(currentFile.id, block.id, action);
+            });
           });
-        });
+        }
 
         const conflictRowsContainer = conflictBox.querySelector('.divide-y');
 
@@ -546,6 +564,8 @@ export function renderDiffInspector(container, store) {
         (block.rows || []).forEach(row => {
           const rowEl = document.createElement('div');
           rowEl.className = 'grid grid-cols-2 divide-x divide-slate-800/80 transition-colors';
+          rowEl.setAttribute('data-left-line', row.left.num !== null ? String(row.left.num) : '');
+          rowEl.setAttribute('data-right-line', row.right.num !== null ? String(row.right.num) : '');
 
           // Left cell styling based on resolution
           let leftBg = 'bg-amber-500/10 text-amber-200';
@@ -628,6 +648,8 @@ export function renderDiffInspector(container, store) {
       (block.rows || []).forEach(row => {
         const rowEl = document.createElement('div');
         rowEl.className = 'grid grid-cols-2 divide-x divide-slate-800/80 hover:bg-surface-container/30 transition-colors';
+        rowEl.setAttribute('data-left-line', row.left.num !== null ? String(row.left.num) : '');
+        rowEl.setAttribute('data-right-line', row.right.num !== null ? String(row.right.num) : '');
 
         // Format Left cell
         let leftBg = '';
@@ -700,9 +722,22 @@ export function renderDiffInspector(container, store) {
    * Main view updater based on state
    */
   function updateView(state) {
+    if (!state) return;
+
     // 1. Header Badges
-    diffTargetSourceBadge.textContent = `${state.targetSource.repo} (${state.targetSource.branch})`;
-    diffReferenceSourceBadge.textContent = `${state.referenceSource.repo} (${state.referenceSource.branch})`;
+    const targetLabel = state.targetSource?.repo
+      ? `${state.targetSource.repo} (${state.targetSource.branch || 'sources'})`
+      : 'Target (unselected)';
+    const refLabel = state.referenceSource?.repo
+      ? `${state.referenceSource.repo} (${state.referenceSource.branch || 'sources'})`
+      : 'Reference (unselected)';
+
+    if (diffTargetSourceBadge) {
+      diffTargetSourceBadge.textContent = targetLabel;
+    }
+    if (diffReferenceSourceBadge) {
+      diffReferenceSourceBadge.textContent = refLabel;
+    }
 
     // 2. Left Rail File List
     renderFileList(state);
@@ -732,6 +767,52 @@ export function renderDiffInspector(container, store) {
           <span>${unresolvedCount} unresolved conflict${unresolvedCount > 1 ? 's' : ''}</span>
         `;
       }
+    }
+
+    if (diffModeBadge) {
+      const isPreview = state.diffMode === 'preview';
+      const diffFiles = state.diffFiles || [];
+      const countLabel = isPreview && diffFiles.length > 1 ? ` (${diffFiles.length} tệp)` : '';
+      diffModeBadge.className = isPreview
+        ? 'hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500/10 border border-sky-500/30 text-xs font-semibold text-sky-300 shrink-0'
+        : 'hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-500/10 border border-violet-500/30 text-xs font-semibold text-violet-300 shrink-0';
+      diffModeBadge.innerHTML = `
+        <span class="material-symbols-outlined text-[15px]">${isPreview ? 'visibility' : 'fact_check'}</span>
+        <span>${isPreview ? `Preview trước sync${countLabel}` : 'Review sau sync'}</span>
+      `;
+    }
+
+    if (mergeActionFooter) {
+      mergeActionFooter.classList.toggle('hidden', state.diffMode === 'preview');
+      mergeActionFooter.classList.toggle('flex', state.diffMode !== 'preview');
+    }
+
+    if (diffPreviewNotice) {
+      const isPreview = state.diffMode === 'preview';
+      const diffFiles = state.diffFiles || [];
+      diffPreviewNotice.classList.toggle('hidden', !isPreview);
+      diffPreviewNotice.classList.toggle('flex', isPreview);
+      if (isPreview) {
+        const textSpan = diffPreviewNotice.querySelector('span:last-child');
+        if (textSpan) {
+          textSpan.textContent = diffFiles.length > 1
+            ? `Chế độ Preview chỉ đọc: đang đối chiếu ${diffFiles.length} tệp được chọn trước khi đồng bộ. Chạy đồng bộ để tạo review batch.`
+            : 'Preview chỉ đọc, chưa ghi Target. Chạy đồng bộ để tạo review batch.';
+        }
+      }
+    }
+
+    if (state.diffMode === 'preview' && Number.isFinite(state.previewDiffContext?.line)) {
+      requestAnimationFrame(() => {
+        const line = String(state.previewDiffContext.line);
+        const targetRow = diffCodeRowsContainer.querySelector(`[data-left-line="${line}"], [data-right-line="${line}"]`);
+        if (targetRow) {
+          targetRow.classList.add('ring-1', 'ring-sky-400/70', 'bg-sky-500/10');
+          if (typeof targetRow.scrollIntoView === 'function') {
+            targetRow.scrollIntoView({ block: 'center' });
+          }
+        }
+      });
     }
   }
 

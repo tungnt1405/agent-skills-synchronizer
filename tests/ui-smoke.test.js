@@ -13,12 +13,16 @@
  * Execution: node tests/ui-smoke.test.js
  */
 
+process.env.NODE_ENV = 'test';
+
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 const { executeSyncBatch, checkAgentInstalled, buildDiffRows, normalizeRelativePath } = require('../tools/sync-executor.js');
 const { mergeMatchingFile, createNewFile, buildTargetReferenceSyncPrompt } = require('../tools/ai-merge-engine.js');
+const { AGENT_CATALOG, discoverAgentCapabilities, validateAiEngineSelection, runAgentMerge, resolveEnvironmentSandbox, MAX_AGENT_OUTPUT_BYTES } = require('../tools/agent-adapters.js');
+const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog } = require('../tools/skillsync-server.js');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -375,9 +379,36 @@ async function main() {
     }
   });
 
+  runTest('Diff Inspector bảo vệ an toàn khi targetSource / referenceSource là null (chống crash updateView)', () => {
+    if (!diffInspectorContent.includes('state.targetSource?.repo') || !diffInspectorContent.includes('state.referenceSource?.repo')) {
+      throw new Error('Diff Inspector thiếu kiểm tra null an toàn cho targetSource / referenceSource trong updateView');
+    }
+  });
+
   runTest('Diff Inspector phát event skillsync:merge-rejected khi reject batch', () => {
     if (!diffInspectorContent.includes('skillsync:merge-rejected')) {
       throw new Error('Thiếu event skillsync:merge-rejected');
+    }
+  });
+
+  runTest('Diff Inspector có mode badge preview/review', () => {
+    if (!diffInspectorContent.includes('id="diff-mode-badge"')) {
+      throw new Error('Thiếu #diff-mode-badge trong Diff Inspector');
+    }
+    if (!diffInspectorContent.includes('Preview trước sync') || !diffInspectorContent.includes('Review sau sync')) {
+      throw new Error('Thiếu nhãn mode preview/review');
+    }
+  });
+
+  runTest('Diff Inspector có notice preview chỉ đọc', () => {
+    if (!diffInspectorContent.includes('id="diff-preview-notice"')) {
+      throw new Error('Thiếu #diff-preview-notice trong Diff Inspector');
+    }
+  });
+
+  runTest('Workstation có row action xem diff', () => {
+    if (!workstationContent.includes('btn-row-view-diff')) {
+      throw new Error('Thiếu .btn-row-view-diff trong Workstation');
     }
   });
 
@@ -851,6 +882,45 @@ async function main() {
     }
   });
 
+  await runAsyncTest('4.15 store.openPreviewDiff(): map preview response sang diffMode preview', async () => {
+    const freshStoreModule = await import(`../assets/js/store.js?preview=${Date.now()}`);
+    const freshStore = freshStoreModule.appStore || freshStoreModule.default;
+    freshStore.state.targetSource = { repo: 'target-fixture', branch: 'sources' };
+    freshStore.state.referenceSource = { repo: 'reference-fixture', branch: 'sources' };
+
+    const fetchImpl = async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        mode: 'preview',
+        targetSource: { repo: 'target-fixture', branch: 'sources' },
+        referenceSource: { repo: 'reference-fixture', branch: 'sources' },
+        file: {
+          id: 'preview-skills-example-skill-md',
+          path: 'skills/example/SKILL.md',
+          name: 'SKILL.md',
+          shortPath: 'skills/example/SKILL.md',
+          status: 'MODIFIED',
+          targetExists: true,
+          refExists: true,
+          sha: 'abc1234',
+          size: '1.0 KB',
+          additions: 1,
+          deletions: 1,
+          blocks: [{ id: 'preview-block-1', type: 'change', rows: [{ left: { num: 1, text: 'old', type: 'removed' }, right: { num: 1, text: 'new', type: 'added' } }] }]
+        }
+      })
+    });
+
+    const file = await freshStore.openPreviewDiff('skills/example/SKILL.md', { line: 1, fetchImpl });
+    const state = freshStore.getState();
+    if (!file) throw new Error('openPreviewDiff không trả file');
+    if (state.diffMode !== 'preview') throw new Error('diffMode không phải preview');
+    if (state.activeView !== 'diff-inspector') throw new Error('Không mở Diff Inspector');
+    if (state.diffFiles.length !== 1) throw new Error('Preview không map thành một diff file');
+    if (state.previewDiffContext.line !== 1) throw new Error('Không lưu line context');
+  });
+
   // -------------------------------------------------------------
   // GROUP 5: Modal Manager Exports
   // -------------------------------------------------------------
@@ -1132,6 +1202,21 @@ async function main() {
     }
     if (!prompt.includes('Target: skills/test.md ↔ Reference: skills/test.md')) {
       throw new Error('buildTargetReferenceSyncPrompt không liệt kê đúng cặp target ↔ reference');
+    }
+    if (!prompt.includes('QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ')) {
+      throw new Error('buildTargetReferenceSyncPrompt thiếu QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ');
+    }
+    if (!prompt.includes('Kế thừa Cấu trúc Mở rộng')) {
+      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Kế thừa Cấu trúc Mở rộng');
+    }
+    if (!prompt.includes('Bảo toàn Định danh Dự án')) {
+      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Bảo toàn Định danh Dự án');
+    }
+    if (!prompt.includes('Phạm vi So sánh Khép kín') || !prompt.includes('CHỈ SO SÁNH TRỰC TIẾP GIỮA 2 FILE')) {
+      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Phạm vi So sánh Khép kín (Strict Scope)');
+    }
+    if (!prompt.includes('Không thêm bất kỳ nội dung linh tinh nào vào file')) {
+      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc cấm thêm nội dung linh tinh vào file');
     }
     if (!prompt.includes('Backup trước khi sửa')) {
       throw new Error('buildTargetReferenceSyncPrompt thiếu chỉ dẫn backup bắt buộc');
@@ -1951,6 +2036,2338 @@ async function main() {
     assert.strictEqual(state.diffFiles.length, 0, 'diffFiles không được chứa dữ liệu và phải rỗng');
     assert.strictEqual(state.activeSyncSession, null, 'activeSyncSession phải là null');
   });
+
+  // -------------------------------------------------------------
+  // GROUP 11: Agent Adapters, Provider Mapping & Sandbox Enforcement (Phase 1)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 11: Agent Adapters, Provider Mapping & Sandbox Enforcement (Phase 1)');
+
+  await runAsyncTest('11.1 Unknown Agent không thể tạo command hoặc vượt qua catalog check', async () => {
+    // 1. Unknown agent không tồn tại trong AGENT_CATALOG
+    assert.strictEqual(AGENT_CATALOG['unknown-agent'], undefined, 'Unknown agent không được tồn tại trong AGENT_CATALOG');
+    assert.strictEqual(AGENT_CATALOG['evil-cmd-injection'], undefined, 'Malicious agent ID không được tồn tại trong AGENT_CATALOG');
+
+    // 2. validateAiEngineSelection từ chối unknown agent
+    const dummyCapabilities = {
+      agents: [
+        { id: 'claude', provider: { id: 'anthropic-claude', label: 'Anthropic Claude' }, models: ['claude-3-5-sonnet'] }
+      ]
+    };
+    const invalidSelection = validateAiEngineSelection(
+      { agent: 'unknown-agent', provider: 'anthropic-claude', model: 'claude-3-5-sonnet' },
+      dummyCapabilities
+    );
+    assert.strictEqual(invalidSelection.ok, false, 'validateAiEngineSelection phải trả về ok: false cho unknown agent');
+    assert.strictEqual(invalidSelection.code, 'INVALID_AI_ENGINE_SELECTION', 'Phải trả về mã lỗi INVALID_AI_ENGINE_SELECTION');
+
+    // 3. runAgentMerge từ chối unknown agent và fake runner không bao giờ được gọi
+    let runnerCalled = false;
+    const fakeRunner = async () => {
+      runnerCalled = true;
+      return { exitCode: 0, stdout: '' };
+    };
+
+    let executionFailed = false;
+    try {
+      const res = await runAgentMerge({
+        agent: 'unknown-agent',
+        provider: 'anthropic-claude',
+        model: 'default',
+        prompt: 'test prompt',
+        runProcess: fakeRunner
+      });
+      if (res && (res.ok === false || res.code)) {
+        executionFailed = true;
+      }
+    } catch (err) {
+      executionFailed = true;
+    }
+
+    assert.strictEqual(runnerCalled, false, 'Process runner không bao giờ được gọi cho unknown agent');
+    assert.strictEqual(executionFailed, true, 'runAgentMerge phải thất bại khi agent là unknown');
+  });
+
+  await runAsyncTest('11.2 claude adapter xác định fixed Provider chuẩn (anthropic-claude)', async () => {
+    const fakeRunner = async (cmdOrOptions, maybeArgs) => {
+      const cmd = typeof cmdOrOptions === 'string' ? cmdOrOptions : (cmdOrOptions?.command || cmdOrOptions?.bin || cmdOrOptions?.file);
+      const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+      return {
+        exitCode: 0,
+        status: 0,
+        code: 0,
+        stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet, claude-3-opus\n',
+        stderr: ''
+      };
+    };
+
+    const capabilities = await discoverAgentCapabilities({ runProcess: fakeRunner });
+    assert.ok(capabilities && Array.isArray(capabilities.agents), 'discoverAgentCapabilities phải trả về danh sách agents');
+    const claude = capabilities.agents.find((agent) => agent.id === 'claude');
+    assert.ok(claude, 'claude agent phải tồn tại trong kết quả capabilities.agents');
+    assert.strictEqual(claude.provider.id, 'anthropic-claude', 'Provider ID của claude phải là anthropic-claude');
+    assert.strictEqual(claude.provider.label, 'Anthropic Claude', 'Provider Label của claude phải là Anthropic Claude');
+  });
+
+  await runAsyncTest('11.3 Discovered Model hợp lệ được validateAiEngineSelection chấp nhận', async () => {
+    const fakeRunner = async () => ({
+      exitCode: 0,
+      status: 0,
+      code: 0,
+      stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet, claude-3-opus\n',
+      stderr: ''
+    });
+
+    const capabilities = await discoverAgentCapabilities({ runProcess: fakeRunner });
+    const selection = validateAiEngineSelection(
+      { agent: 'claude', provider: 'anthropic-claude', model: 'claude-3-5-sonnet' },
+      capabilities
+    );
+
+    assert.strictEqual(selection.ok, true, 'Model đã phát hiện phải được chấp thuận');
+    assert.strictEqual(selection.code, undefined, 'Không được có mã lỗi khi selection hợp lệ');
+  });
+
+  await runAsyncTest('11.4 Stale Model hoặc Model không tồn tại bị validateAiEngineSelection từ chối với INVALID_AI_ENGINE_SELECTION', async () => {
+    const fakeRunner = async () => ({
+      exitCode: 0,
+      status: 0,
+      code: 0,
+      stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet, claude-3-opus\n',
+      stderr: ''
+    });
+
+    const capabilities = await discoverAgentCapabilities({ runProcess: fakeRunner });
+    const selection = validateAiEngineSelection(
+      { agent: 'claude', provider: 'anthropic-claude', model: 'stale' },
+      capabilities
+    );
+
+    assert.strictEqual(selection.ok, false, 'Stale model phải bị từ chối');
+    assert.strictEqual(selection.code, 'INVALID_AI_ENGINE_SELECTION', 'Phải trả về error code INVALID_AI_ENGINE_SELECTION');
+  });
+
+  await runAsyncTest('11.5 Sandbox setup failure ngăn chặn hoàn toàn việc thực thi agent binary (SANDBOX_REQUIRED)', async () => {
+    let runnerCalled = false;
+    const fakeRunner = async () => {
+      runnerCalled = true;
+      return { exitCode: 0, stdout: 'should never execute' };
+    };
+
+    let launchFailure = null;
+    try {
+      const result = await runAgentMerge({
+        agent: 'claude',
+        provider: 'anthropic-claude',
+        model: 'claude-3-5-sonnet',
+        prompt: 'test prompt',
+        sandbox: { available: true, command: null },
+        runProcess: fakeRunner
+      });
+      if (result && (result.ok === false || result.code)) {
+        launchFailure = result;
+      }
+    } catch (err) {
+      launchFailure = err;
+    }
+
+    assert.strictEqual(runnerCalled, false, 'Process runner không bao giờ được gọi cho agent binary khi sandbox setup thất bại');
+    assert.ok(launchFailure, 'runAgentMerge phải từ chối khi sandbox setup thất bại');
+    assert.strictEqual(launchFailure.code || launchFailure.errorCode, 'SANDBOX_REQUIRED', 'Lỗi phải mang mã SANDBOX_REQUIRED');
+  });
+
+  await runAsyncTest('11.6 resolveEnvironmentSandbox khi SKILLSYNC_SANDBOX_REQUIRED=1 không có SKILLSYNC_SANDBOX_COMMAND trả về available: true, command: null và runAgentMerge dừng với SANDBOX_REQUIRED', async () => {
+    const origRequired = process.env.SKILLSYNC_SANDBOX_REQUIRED;
+    const origCommand = process.env.SKILLSYNC_SANDBOX_COMMAND;
+
+    try {
+      process.env.SKILLSYNC_SANDBOX_REQUIRED = '1';
+      delete process.env.SKILLSYNC_SANDBOX_COMMAND;
+
+      const sandboxConfig = resolveEnvironmentSandbox();
+      assert.strictEqual(sandboxConfig.available, true, 'sandboxConfig.available phải là true khi SKILLSYNC_SANDBOX_REQUIRED=1');
+      assert.strictEqual(sandboxConfig.command, null, 'sandboxConfig.command phải là null khi không có SKILLSYNC_SANDBOX_COMMAND');
+
+      let runnerCalled = false;
+      const fakeRunner = async () => {
+        runnerCalled = true;
+        return { exitCode: 0, stdout: 'should not execute' };
+      };
+
+      // Gọi runAgentMerge không truyền sandbox trong options để hàm tự gọi resolveEnvironmentSandbox()
+      const result = await runAgentMerge({
+        agent: 'claude',
+        provider: 'anthropic-claude',
+        model: 'claude-3-5-sonnet',
+        prompt: 'test prompt',
+        runProcess: fakeRunner
+      });
+
+      assert.strictEqual(runnerCalled, false, 'Process runner không bao giờ được gọi khi sandbox bắt buộc nhưng không khả dụng');
+      assert.strictEqual(result.ok, false, 'runAgentMerge phải trả về ok: false');
+      assert.strictEqual(result.code, 'SANDBOX_REQUIRED', 'runAgentMerge phải trả về mã lỗi SANDBOX_REQUIRED');
+    } finally {
+      if (origRequired !== undefined) {
+        process.env.SKILLSYNC_SANDBOX_REQUIRED = origRequired;
+      } else {
+        delete process.env.SKILLSYNC_SANDBOX_REQUIRED;
+      }
+      if (origCommand !== undefined) {
+        process.env.SKILLSYNC_SANDBOX_COMMAND = origCommand;
+      } else {
+        delete process.env.SKILLSYNC_SANDBOX_COMMAND;
+      }
+    }
+  });
+
+  await runAsyncTest('11.7 Sandbox execution failure không bao giờ fallback để retry thực thi trực tiếp trên host', async () => {
+    const executedCommands = [];
+    const fakeRunner = async (cmd, args) => {
+      executedCommands.push({ cmd, args });
+      return { exitCode: 1, stderr: 'Container execution failed' };
+    };
+
+    const mergeResult = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: true, command: 'docker', args: ['run', '--rm'] },
+      runProcess: fakeRunner
+    });
+
+    assert.strictEqual(mergeResult.ok, false, 'runAgentMerge phải trả về ok: false khi sandbox process thất bại');
+    assert.strictEqual(mergeResult.code, 'AGENT_EXECUTION_FAILED');
+    assert.strictEqual(executedCommands.length, 1, 'Chỉ được thực thi đúng 1 lần qua sandbox command, tuyệt đối không retry trên host');
+    assert.strictEqual(executedCommands[0].cmd, 'docker', 'Lệnh duy nhất được gọi phải là command của sandbox');
+  });
+
+  await runAsyncTest('11.8 runAgentMerge từ chối stdout trống hoặc chỉ chứa khoảng trắng với INVALID_AGENT_OUTPUT', async () => {
+    // 1. Empty string stdout
+    const fakeRunnerEmpty = async () => ({ exitCode: 0, stdout: '' });
+    const resEmpty = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunnerEmpty
+    });
+    assert.strictEqual(resEmpty.ok, false, 'runAgentMerge phải trả về ok: false khi stdout rỗng');
+    assert.strictEqual(resEmpty.code, 'INVALID_AGENT_OUTPUT', 'Code phải là INVALID_AGENT_OUTPUT');
+    assert.strictEqual(resEmpty.error, 'Missing content from agent CLI output');
+
+    // 2. Whitespace-only stdout
+    const fakeRunnerWhitespace = async () => ({ exitCode: 0, stdout: '   \n\t  \r\n' });
+    const resWhitespace = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunnerWhitespace
+    });
+    assert.strictEqual(resWhitespace.ok, false, 'runAgentMerge phải trả về ok: false khi stdout chỉ có whitespace');
+    assert.strictEqual(resWhitespace.code, 'INVALID_AGENT_OUTPUT', 'Code phải là INVALID_AGENT_OUTPUT');
+    assert.strictEqual(resWhitespace.error, 'Missing content from agent CLI output');
+
+    // 3. Null bytes only stdout
+    const fakeRunnerNullBytes = async () => ({ exitCode: 0, stdout: '\0\0\0' });
+    const resNullBytes = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunnerNullBytes
+    });
+    assert.strictEqual(resNullBytes.ok, false, 'runAgentMerge phải trả về ok: false khi stdout chỉ chứa null bytes');
+    assert.strictEqual(resNullBytes.code, 'INVALID_AGENT_OUTPUT', 'Code phải là INVALID_AGENT_OUTPUT');
+  });
+
+  await runAsyncTest('11.9 runAgentMerge từ chối stdout vượt quá kích thước tối đa (> 5MB) với INVALID_AGENT_OUTPUT', async () => {
+    const oversizeBytes = MAX_AGENT_OUTPUT_BYTES + 32;
+    const oversizedStdout = 'x'.repeat(oversizeBytes);
+
+    const fakeRunnerOversized = async () => ({ exitCode: 0, stdout: oversizedStdout });
+    const resOversized = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunnerOversized
+    });
+
+    assert.strictEqual(resOversized.ok, false, 'runAgentMerge phải trả về ok: false khi stdout vượt quá 5MB');
+    assert.strictEqual(resOversized.code, 'INVALID_AGENT_OUTPUT', 'Code phải là INVALID_AGENT_OUTPUT');
+    assert.strictEqual(resOversized.error, 'Agent CLI output exceeds maximum allowed size');
+  });
+
+  await runAsyncTest('11.10 runAgentMerge trả về bounded object và không diễn giải tool calls/control fields trong Model output', async () => {
+    // Model output containing tool calls, execution directives, file paths, and shell commands
+    const fakeModelOutput = [
+      '<tool_call>',
+      '{"name": "execute_command", "arguments": {"cmd": "rm -rf /"}}',
+      '</tool_call>',
+      '```bash',
+      'cat /etc/passwd',
+      '```',
+      'path: /sensitive/path',
+      'function mergedCode() { return 42; }'
+    ].join('\n');
+
+    // Process result with extra control fields / command injection attempts
+    const fakeRunner = async () => ({
+      exitCode: 0,
+      stdout: fakeModelOutput,
+      stderr: '',
+      command: 'dangerous-command',
+      args: ['--all'],
+      extraDirective: 'exec-now'
+    });
+
+    const res = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunner
+    });
+
+    assert.strictEqual(res.ok, true, 'runAgentMerge phải thành công và trả về ok: true');
+    assert.strictEqual(typeof res.content, 'string', 'content phải là UTF-8 string');
+    assert.strictEqual(res.content, fakeModelOutput, 'content phải được giữ nguyên là text UTF-8 không bị thực thi');
+    assert.strictEqual(res.engineName, 'claude', 'engineName phải là ID của adapter');
+    assert.strictEqual(res.analysisSummary, 'Merged via Claude CLI', 'analysisSummary phải đúng định dạng');
+    assert.ok(Array.isArray(res.conflictPoints), 'conflictPoints phải là array');
+    assert.strictEqual(res.conflictPoints.length, 0, 'conflictPoints mặc định rỗng');
+
+    // Bounded object check: verify no control fields or commands leak into returned object
+    assert.strictEqual(res.command, undefined, 'Không rò rỉ field command');
+    assert.strictEqual(res.args, undefined, 'Không rò rỉ field args');
+    assert.strictEqual(res.extraDirective, undefined, 'Không rò rỉ extraDirective');
+    assert.strictEqual(res.tool_call, undefined, 'Không diễn giải tool_call');
+    assert.strictEqual(res.execute_command, undefined, 'Không diễn giải execute_command');
+
+    const returnedKeys = Object.keys(res).sort();
+    assert.deepStrictEqual(
+      returnedKeys,
+      ['analysisSummary', 'conflictPoints', 'content', 'engineName', 'ok'].sort(),
+      'Kết quả trả về chỉ được chứa đúng 5 trường bounded object đã định nghĩa'
+    );
+
+    // Control-plane rejection check: runner trả về control-plane field trực tiếp
+    const fakeRunnerWithControlPlane = async () => ({
+      exitCode: 0,
+      stdout: 'some valid content',
+      controlPlane: { bypass: true }
+    });
+    const resControlPlane = await runAgentMerge({
+      agent: 'claude',
+      provider: 'anthropic-claude',
+      model: 'claude-3-5-sonnet',
+      prompt: 'test prompt',
+      sandbox: { available: false },
+      runProcess: fakeRunnerWithControlPlane
+    });
+    assert.strictEqual(resControlPlane.ok, false, 'runAgentMerge phải từ chối khi có control-plane fields');
+    assert.strictEqual(resControlPlane.code, 'INVALID_AGENT_OUTPUT', 'Code phải là INVALID_AGENT_OUTPUT');
+  });
+
+  // -------------------------------------------------------------
+  // GROUP 12: Difference Preview API
+  // -------------------------------------------------------------
+  const tmpPreviewRoot = path.join(ROOT_DIR, 'tests', '.tmp-diff-preview');
+  const tmpPreviewSources = path.join(tmpPreviewRoot, 'sources');
+
+  startGroup('Nhóm 12: Difference Preview API');
+
+  try {
+    await runAsyncTest('12.1 GET /api/diff/preview helper trả rows side-by-side cho file hợp lệ', async () => {
+      await fs.promises.rm(tmpPreviewRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(tmpPreviewSources, 'target-fixture', 'skills', 'example'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpPreviewSources, 'reference-fixture', 'skills', 'example'), { recursive: true });
+      await fs.promises.writeFile(
+        path.join(tmpPreviewSources, 'target-fixture', 'skills', 'example', 'SKILL.md'),
+        'name: example\nversion: 1\n'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpPreviewSources, 'reference-fixture', 'skills', 'example', 'SKILL.md'),
+        'name: example\nversion: 2\n'
+      );
+
+      const result = await buildPreviewDiff('target-fixture', 'reference-fixture', 'skills/example/SKILL.md', {
+        sourcesDir: tmpPreviewSources
+      });
+      if (result.success !== true) throw new Error('Preview helper không trả success=true');
+      if (result.mode !== 'preview') throw new Error('Preview helper không trả mode=preview');
+      if (!result.file || !Array.isArray(result.file.blocks)) throw new Error('Preview helper thiếu file.blocks');
+      const rows = result.file.blocks.flatMap((block) => block.rows || []);
+      if (rows.length === 0) throw new Error('Preview helper không có diff rows');
+    });
+
+    await runAsyncTest('12.2 GET /api/diff/preview helper chặn path traversal', async () => {
+      let blocked = false;
+      try {
+        await buildPreviewDiff('target-fixture', 'reference-fixture', '../secrets.json', {
+          sourcesDir: tmpPreviewSources
+        });
+      } catch (err) {
+        blocked = (err.statusCode === 400 || err.statusCode === 403) && (err.message.includes('Unsafe relative path') || err.message.includes('not allowed'));
+      }
+      if (!blocked) throw new Error('Preview helper không chặn path traversal');
+    });
+
+    await runAsyncTest('12.3 GET /api/diff/preview helper chặn sensitive filename', async () => {
+      let blocked = false;
+      try {
+        await buildPreviewDiff('target-fixture', 'reference-fixture', 'secrets.json', {
+          sourcesDir: tmpPreviewSources
+        });
+      } catch (err) {
+        blocked = err.statusCode === 403 && err.code === 'DIFF_PREVIEW_FORBIDDEN';
+      }
+      if (!blocked) throw new Error('Preview helper không chặn secrets.json');
+    });
+  } finally {
+    await fs.promises.rm(tmpPreviewRoot, { recursive: true, force: true }).catch(() => {});
+  }
+
+  // -------------------------------------------------------------
+  // GROUP 13: API & Transactional Execution (Phase 2)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 13: API & Transactional Execution (Phase 2)');
+
+  function createMockReq({ method = 'GET', url = '/api/agents', headers = {} } = {}) {
+    return {
+      method,
+      url,
+      headers: { host: '127.0.0.1', ...headers }
+    };
+  }
+
+  function createMockRes() {
+    const headers = {};
+    return {
+      statusCode: 200,
+      headersSent: false,
+      headers,
+      body: '',
+      setHeader(name, value) {
+        headers[String(name).toLowerCase()] = value;
+      },
+      getHeader(name) {
+        return headers[String(name).toLowerCase()];
+      },
+      writeHead(status, newHeaders = {}) {
+        this.statusCode = status;
+        this.headersSent = true;
+        if (newHeaders && typeof newHeaders === 'object') {
+          for (const [k, v] of Object.entries(newHeaders)) {
+            headers[String(k).toLowerCase()] = v;
+          }
+        }
+        return this;
+      },
+      end(chunk) {
+        this.headersSent = true;
+        if (chunk) {
+          this.body += (typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+        }
+      }
+    };
+  }
+
+  await runAsyncTest('13.1 GET /api/agents returns 200 and agents array (GET/HEAD only)', async () => {
+    // 1. GET /api/agents
+    const getReq = createMockReq({ method: 'GET', url: '/api/agents' });
+    const getRes = createMockRes();
+    const handled = await handleApi(getReq, getRes);
+    assert.strictEqual(handled, true, 'handleApi phải xử lý endpoint /api/agents');
+    assert.strictEqual(getRes.statusCode, 200, 'GET /api/agents phải trả về status 200');
+    assert.ok(getRes.body && getRes.body.length > 0, 'GET /api/agents phải có response body');
+    const data = JSON.parse(getRes.body);
+    assert.ok(Array.isArray(data.agents), 'GET /api/agents phải trả về thuộc tính agents dạng mảng');
+
+    // 2. HEAD /api/agents
+    const headReq = createMockReq({ method: 'HEAD', url: '/api/agents' });
+    const headRes = createMockRes();
+    const headHandled = await handleApi(headReq, headRes);
+    assert.strictEqual(headHandled, true, 'handleApi phải xử lý HEAD /api/agents');
+    assert.strictEqual(headRes.statusCode, 200, 'HEAD /api/agents phải trả về status 200');
+    assert.strictEqual(headRes.body, '', 'HEAD /api/agents không được trả về response body');
+
+    // 3. POST /api/agents -> 405 Method Not Allowed
+    const postReq = createMockReq({ method: 'POST', url: '/api/agents' });
+    const postRes = createMockRes();
+    let postError = null;
+    try {
+      await handleApi(postReq, postRes);
+    } catch (err) {
+      postError = err;
+    }
+    const postStatus = postRes.statusCode === 405 ? 405 : postError?.statusCode;
+    assert.strictEqual(postStatus, 405, 'POST /api/agents phải trả về status 405 Method Not Allowed');
+  });
+
+  await runAsyncTest('13.2 GET /api/agents empty successful list and structured failure', async () => {
+    // 1. When no agents are discovered, returns 200 with { agents: [] }
+    const emptyReq = createMockReq({ method: 'GET', url: '/api/agents' });
+    const emptyRes = createMockRes();
+    const emptyUrl = new URL(emptyReq.url, 'http://127.0.0.1');
+    const handledEmpty = await handleApi(emptyReq, emptyRes, emptyUrl, {
+      discoverAgentCapabilities: async () => ({ agents: [] }),
+      runProcess: async () => ({ exitCode: 1, stdout: '' })
+    });
+    assert.strictEqual(handledEmpty, true, 'handleApi phải xử lý GET /api/agents');
+    assert.strictEqual(emptyRes.statusCode, 200, 'Khi không có agent nào, GET /api/agents phải trả về status 200');
+    const emptyData = JSON.parse(emptyRes.body);
+    assert.deepStrictEqual(emptyData, { agents: [] }, 'Response phải chứa { agents: [] }');
+
+    // 2. When discovery throws an unexpected error, returns error with code: 'AGENT_DISCOVERY_FAILED'
+    // without exposing stack trace or raw env
+    const errReq = createMockReq({ method: 'GET', url: '/api/agents' });
+    const errRes = createMockRes();
+    const errUrl = new URL(errReq.url, 'http://127.0.0.1');
+    const secretEnv = 'FORBIDDEN_ENV_VARIABLE_API_KEY_12345';
+    const secretStackTrace = 'InternalDiscoveryStackError: sensitive stack line\n    at SecretScanner.scan (/app/secret.js:1:1)';
+
+    let caughtError = null;
+    try {
+      await handleApi(errReq, errRes, errUrl, {
+        discoverAgentCapabilities: async () => {
+          const err = new Error(`Unexpected discovery failure: ${secretEnv}`);
+          err.stack = secretStackTrace;
+          throw err;
+        },
+        runProcess: async () => {
+          const err = new Error(`Unexpected runner failure: ${secretEnv}`);
+          err.stack = secretStackTrace;
+          throw err;
+        }
+      });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    const statusCode = errRes.statusCode !== 200 ? errRes.statusCode : caughtError?.statusCode;
+    assert.ok(statusCode >= 400, 'Discovery failure phải trả về HTTP status lỗi (>= 400)');
+
+    let payload = null;
+    if (errRes.body) {
+      try {
+        payload = JSON.parse(errRes.body);
+      } catch {}
+    }
+
+    const errorCode = payload?.code || caughtError?.code;
+    assert.strictEqual(errorCode, 'AGENT_DISCOVERY_FAILED', 'Lỗi phải có mã code AGENT_DISCOVERY_FAILED');
+
+    // Verify stack trace or raw env are not exposed in response
+    const rawResponseBody = errRes.body || '';
+    assert.strictEqual(rawResponseBody.includes(secretEnv), false, 'Response không được để lộ raw env');
+    assert.strictEqual(rawResponseBody.includes(secretStackTrace), false, 'Response không được để lộ stack trace');
+    assert.strictEqual(rawResponseBody.includes('/app/secret.js'), false, 'Response không được để lộ internal file paths');
+    assert.strictEqual(Boolean(payload?.stack), false, 'Payload không được chứa trường stack');
+    if (caughtError) {
+      assert.strictEqual(caughtError.message.includes(secretEnv), false, 'Caught error message không được để lộ raw env');
+    }
+  });
+
+  await runAsyncTest('13.3 executeSyncBatch rejects forged Provider before backup or write', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-3');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession133';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const originalTargetContent = '# Target Original Content\nLine 2';
+      const referenceUpdatedContent = '# Reference Updated Content\nLine 2 modified';
+      const referenceNewContent = '# Reference Brand New File\nLine 1';
+
+      const targetExistingPath = path.join(sourcesDir, 'target', 'skills', 'existing.md');
+      const referenceExistingPath = path.join(sourcesDir, 'reference', 'skills', 'existing.md');
+      const referenceNewPath = path.join(sourcesDir, 'reference', 'skills', 'new.md');
+      const targetNewPath = path.join(sourcesDir, 'target', 'skills', 'new.md');
+
+      await fs.promises.writeFile(targetExistingPath, originalTargetContent, 'utf8');
+      await fs.promises.writeFile(referenceExistingPath, referenceUpdatedContent, 'utf8');
+      await fs.promises.writeFile(referenceNewPath, referenceNewContent, 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/existing.md' }],
+        newFiles: [{ path: 'skills/new.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'forged-provider',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      let thrown = null;
+      try {
+        await executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          skipAgentCheck: true
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      if (!thrown) {
+        throw new Error('executeSyncBatch phải reject khi aiEngine có forged provider');
+      }
+
+      // Assert error contract
+      const statusCode = thrown.statusCode ?? thrown.status;
+      assert.strictEqual(statusCode, 400, `Status code phải là 400, nhận: ${statusCode}`);
+      assert.strictEqual(thrown.code, 'INVALID_AI_ENGINE_SELECTION', `Error code phải là 'INVALID_AI_ENGINE_SELECTION', nhận: ${thrown.code}`);
+      assert.strictEqual(thrown.failedStep, 'preflight', `failedStep phải là 'preflight', nhận: ${thrown.failedStep}`);
+
+      // Verify that NO backup directory was created and NO files were written
+      const sessionBackupDir = path.join(backupRoot, syncSessionId);
+      const backupFile = path.join(sessionBackupDir, 'skills', 'existing.md');
+      assert.strictEqual(fs.existsSync(backupFile), false, 'Không được tạo file backup khi preflight thất bại');
+      assert.strictEqual(fs.existsSync(sessionBackupDir), false, 'Không được tạo thư mục backup session khi preflight thất bại');
+
+      // Verify that target existing content was NOT modified
+      const currentTargetContent = await fs.promises.readFile(targetExistingPath, 'utf8');
+      assert.strictEqual(currentTargetContent, originalTargetContent, 'Nội dung file target không được bị thay đổi');
+
+      // Verify that target new file was NOT created
+      assert.strictEqual(fs.existsSync(targetNewPath), false, 'File target mới không được phép tạo khi preflight thất bại');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.4 executeSyncBatch routes merge operations through selected adapter via runAgentMerge', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-4');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession134';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const originalTargetContent = '# Target Original Content 13.4\nLine 2';
+      const referenceUpdatedContent = '# Reference Updated Content 13.4\nLine 2 modified';
+      const referenceNewContent = '# Reference Brand New File 13.4\nLine 1';
+
+      const transformedMatchingContent = '# Transformed Matching Content from Claude';
+      const transformedNewContent = '# Transformed New Content from Claude';
+
+      const targetExistingPath = path.join(sourcesDir, 'target', 'skills', 'existing.md');
+      const referenceExistingPath = path.join(sourcesDir, 'reference', 'skills', 'existing.md');
+      const referenceNewPath = path.join(sourcesDir, 'reference', 'skills', 'new.md');
+      const targetNewPath = path.join(sourcesDir, 'target', 'skills', 'new.md');
+
+      await fs.promises.writeFile(targetExistingPath, originalTargetContent, 'utf8');
+      await fs.promises.writeFile(referenceExistingPath, referenceUpdatedContent, 'utf8');
+      await fs.promises.writeFile(referenceNewPath, referenceNewContent, 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/existing.md' }],
+        newFiles: [{ path: 'skills/new.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const executedCommands = [];
+      const mockRunProcess = async (cmdOrOptions, maybeArgs, extraOptions = {}) => {
+        const cmd = typeof cmdOrOptions === 'string' ? cmdOrOptions : (cmdOrOptions?.command || cmdOrOptions?.bin || cmdOrOptions?.file);
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        const input = extraOptions?.input || cmdOrOptions?.input || '';
+        executedCommands.push({ cmd, args, input });
+
+        // Capability discovery probe
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+
+        // Merge execution
+        if (args.includes('--print') || args.includes('--dangerously-skip-permissions')) {
+          const content = input.includes('skills/new.md')
+            ? transformedNewContent
+            : transformedMatchingContent;
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: content,
+            stderr: ''
+          };
+        }
+
+        return { exitCode: 0, status: 0, code: 0, stdout: 'fallback', stderr: '' };
+      };
+
+      const result = await executeSyncBatch(batch, {
+        sourcesDir,
+        backupRoot,
+        logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+        skipAgentCheck: true,
+        runProcess: mockRunProcess
+      });
+
+      // 1. Asserts mock runProcess was called with command containing claude and non-interactive args
+      const mergeCalls = executedCommands.filter(c => c.args && (c.args.includes('--print') || c.args.includes('--dangerously-skip-permissions')));
+      assert.strictEqual(mergeCalls.length, 2, `Phải có đúng 2 cuộc gọi merge tới runProcess, nhận: ${mergeCalls.length}`);
+      for (const call of mergeCalls) {
+        assert.ok(call.cmd.toLowerCase().includes('claude'), `Lệnh gọi phải chứa 'claude', nhận: ${call.cmd}`);
+        assert.ok(call.args.includes('--print'), `Args phải chứa '--print' cho non-interactive mode`);
+        assert.ok(call.args.includes('--dangerously-skip-permissions'), `Args phải chứa '--dangerously-skip-permissions'`);
+        assert.ok(call.args.includes('--model') && call.args.includes('claude-3-5-sonnet'), `Args phải chỉ định model claude-3-5-sonnet`);
+      }
+
+      // 2. Asserts target files contain the content returned by the mock agent runner
+      const currentTargetExisting = await fs.promises.readFile(targetExistingPath, 'utf8');
+      assert.strictEqual(currentTargetExisting, transformedMatchingContent, 'Target matching file phải chứa nội dung do mock agent trả về');
+
+      const currentTargetNew = await fs.promises.readFile(targetNewPath, 'utf8');
+      assert.strictEqual(currentTargetNew, transformedNewContent, 'Target new file phải chứa nội dung do mock agent trả về');
+
+      // 3. Asserts result.changedFiles[0].engineName === 'claude' (NOT 'local-reference-merge-v1')
+      assert.ok(result.changedFiles && result.changedFiles.length === 2, 'changedFiles phải có 2 phần tử');
+      assert.strictEqual(result.changedFiles[0].engineName, 'claude', `engineName của file 0 phải là 'claude', nhận: ${result.changedFiles[0].engineName}`);
+      assert.notStrictEqual(result.changedFiles[0].engineName, 'local-reference-merge-v1', `engineName không được là 'local-reference-merge-v1'`);
+      assert.strictEqual(result.changedFiles[1].engineName, 'claude', `engineName của file 1 phải là 'claude', nhận: ${result.changedFiles[1].engineName}`);
+      assert.notStrictEqual(result.changedFiles[1].engineName, 'local-reference-merge-v1', `engineName không được là 'local-reference-merge-v1'`);
+
+      // 4. Asserts result.agent === 'claude'
+      assert.strictEqual(result.agent, 'claude', `result.agent phải là 'claude', nhận: ${result.agent}`);
+      assert.strictEqual(result.validatedAiEngine?.agent, 'claude', `result.validatedAiEngine.agent phải là 'claude'`);
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.5 executeSyncBatch rolls back and fails when runAgentMerge fails after backup', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-5');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession135';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const originalTargetContent = '# Target Original Content 13.5\nLine 2';
+      const referenceUpdatedContent = '# Reference Updated Content 13.5\nLine 2 modified';
+
+      const targetExistingPath = path.join(sourcesDir, 'target', 'skills', 'existing.md');
+      const referenceExistingPath = path.join(sourcesDir, 'reference', 'skills', 'existing.md');
+
+      await fs.promises.writeFile(targetExistingPath, originalTargetContent, 'utf8');
+      await fs.promises.writeFile(referenceExistingPath, referenceUpdatedContent, 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/existing.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return {
+          exitCode: 1,
+          status: 1,
+          code: 1,
+          stdout: '',
+          stderr: 'CLI process crashed'
+        };
+      };
+
+      let thrown = null;
+      try {
+        await executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+          skipAgentCheck: true,
+          runProcess: mockRunProcess
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      // Asserts executeSyncBatch rejects with an error
+      assert.ok(thrown, 'executeSyncBatch phải reject với lỗi khi runAgentMerge thất bại');
+      assert.strictEqual(thrown.statusCode, 500, `statusCode phải là 500, nhận: ${thrown.statusCode}`);
+      assert.strictEqual(thrown.code, 'AGENT_EXECUTION_FAILED', `code phải là AGENT_EXECUTION_FAILED, nhận: ${thrown.code}`);
+      assert.strictEqual(thrown.failedStep, 'merge', `failedStep phải là 'merge', nhận: ${thrown.failedStep}`);
+      assert.strictEqual(thrown.failedFile, 'skills/existing.md', `failedFile phải là 'skills/existing.md', nhận: ${thrown.failedFile}`);
+
+      // Asserts backup was created before merge failed
+      const expectedBackupPath = path.join(backupRoot, syncSessionId, 'skills', 'existing.md');
+      assert.ok(fs.existsSync(expectedBackupPath), 'Backup phải tồn tại sau khi copyBackup trước merge');
+      const backupContent = await fs.promises.readFile(expectedBackupPath, 'utf8');
+      assert.strictEqual(backupContent, originalTargetContent, 'Nội dung backup phải bảo toàn byte-for-byte nội dung gốc');
+
+      // Asserts target file was rolled back to its original backup content
+      const targetContent = await fs.promises.readFile(targetExistingPath, 'utf8');
+      assert.strictEqual(targetContent, originalTargetContent, 'File target phải được rollback về nội dung backup gốc');
+      assert.strictEqual(targetContent, backupContent, 'File target phải khớp hoàn toàn với file backup');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.6 executeSyncBatch returns accepted agent, provider, model, and engineName in successful session', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-6');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession136';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'existing.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'existing.md');
+
+      await fs.promises.writeFile(targetPath, '# Target 13.6\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference 13.6\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/existing.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return {
+          exitCode: 0,
+          status: 0,
+          code: 0,
+          stdout: '# Merged Content from Claude\n',
+          stderr: ''
+        };
+      };
+
+      const result = await executeSyncBatch(batch, {
+        sourcesDir,
+        backupRoot,
+        logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+        skipAgentCheck: true,
+        runProcess: mockRunProcess
+      });
+
+      assert.strictEqual(result.success, true, 'result.success phải là true');
+      assert.strictEqual(result.syncSessionId, syncSessionId, `syncSessionId không khớp: ${result.syncSessionId}`);
+      assert.strictEqual(result.status, 'ready-for-review', `status phải là 'ready-for-review'`);
+      assert.strictEqual(result.agent, 'claude', `result.agent phải là 'claude', nhận: ${result.agent}`);
+      assert.strictEqual(result.provider, 'anthropic-claude', `result.provider phải là 'anthropic-claude', nhận: ${result.provider}`);
+      assert.strictEqual(result.model, 'claude-3-5-sonnet', `result.model phải là 'claude-3-5-sonnet', nhận: ${result.model}`);
+      assert.strictEqual(result.engineName, 'claude', `result.engineName phải là 'claude', nhận: ${result.engineName}`);
+      assert.deepStrictEqual(
+        result.validatedAiEngine,
+        { agent: 'claude', provider: 'anthropic-claude', model: 'claude-3-5-sonnet' },
+        'result.validatedAiEngine phải khớp chính xác'
+      );
+      assert.ok(result.backupRoot.includes(syncSessionId), 'backupRoot phải chứa syncSessionId');
+      assert.strictEqual(result.changedFiles.length, 1, 'changedFiles phải có 1 phần tử');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.7 Public failure logs redact prompts and raw CLI output on adapter error', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-7');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession137';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'secret-test.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'secret-test.md');
+
+      await fs.promises.writeFile(targetPath, '# Target Content\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference Content\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/secret-test.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const secretToken = 'sk-secret123';
+      const promptLeak = 'super-secret';
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return {
+          exitCode: 1,
+          status: 1,
+          code: 1,
+          stdout: '',
+          stderr: `Token Bearer ${secretToken} Prompt: ${promptLeak}`
+        };
+      };
+
+      let thrown = null;
+      try {
+        await executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+          skipAgentCheck: true,
+          runProcess: mockRunProcess
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      assert.ok(thrown, 'executeSyncBatch phải reject khi adapter gặp lỗi');
+      assert.strictEqual(thrown.statusCode, 500, `statusCode phải là 500, nhận: ${thrown.statusCode}`);
+      assert.strictEqual(thrown.code, 'AGENT_EXECUTION_FAILED', `code phải là AGENT_EXECUTION_FAILED, nhận: ${thrown.code}`);
+      assert.strictEqual(thrown.failedStep, 'merge', `failedStep phải là 'merge', nhận: ${thrown.failedStep}`);
+      assert.strictEqual(thrown.failedFile, 'skills/secret-test.md', `failedFile phải là 'skills/secret-test.md'`);
+
+      // 1. Assert publicLog and message DO NOT contain raw secret token or prompt text
+      assert.strictEqual(
+        thrown.publicLog.includes(secretToken),
+        false,
+        'thrown.publicLog không được chứa raw token/secret'
+      );
+      assert.strictEqual(
+        thrown.publicLog.includes(promptLeak),
+        false,
+        'thrown.publicLog không được chứa prompt text'
+      );
+      assert.strictEqual(
+        thrown.message.includes(secretToken),
+        false,
+        'thrown.message không được chứa raw token/secret'
+      );
+      assert.strictEqual(
+        thrown.message.includes(promptLeak),
+        false,
+        'thrown.message không được chứa prompt text'
+      );
+
+      // 2. Assert structured error code and safe message are present
+      assert.ok(
+        thrown.publicLog.includes('AGENT_EXECUTION_FAILED'),
+        'publicLog phải chứa structured error code AGENT_EXECUTION_FAILED'
+      );
+      assert.ok(
+        thrown.message.includes('AGENT_EXECUTION_FAILED'),
+        'message phải chứa structured error code AGENT_EXECUTION_FAILED'
+      );
+      assert.ok(
+        thrown.publicLog.includes('Agent merge failed for skills/secret-test.md'),
+        'publicLog phải có thông điệp an toàn'
+      );
+      assert.ok(
+        thrown.message.includes('Agent merge failed for skills/secret-test.md'),
+        'message phải có thông điệp an toàn'
+      );
+
+      // 3. Test sanitizePublicLog helper directly
+      assert.strictEqual(
+        sanitizePublicLog(`Token Bearer ${secretToken} Prompt: ${promptLeak}`).includes(secretToken),
+        false,
+        'sanitizePublicLog phải loại bỏ Bearer token'
+      );
+      assert.strictEqual(
+        sanitizePublicLog(`Token Bearer ${secretToken} Prompt: ${promptLeak}`).includes(promptLeak),
+        false,
+        'sanitizePublicLog phải loại bỏ Prompt content'
+      );
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.8 executeSyncBatch respects custom logFile and suppresses production log in test env', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-8');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const customLogFile = path.join(tmpFixtureRoot, 'custom-sync.log');
+    const prodLogFile = path.join(ROOT_DIR, '.skillsync', 'logs', 'sync-execution.log');
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      await fs.promises.writeFile(path.join(sourcesDir, 'target', 'skills', 'test.md'), 'Target\n', 'utf8');
+      await fs.promises.writeFile(path.join(sourcesDir, 'reference', 'skills', 'test.md'), 'Ref\n', 'utf8');
+
+      const getProdLogContent = async () => {
+        try {
+          return await fs.promises.readFile(prodLogFile, 'utf8');
+        } catch {
+          return '';
+        }
+      };
+
+      // Part 1: Run with custom logFile
+      const batchCustom = {
+        syncSessionId: 'sess138custom',
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/test.md' }]
+      };
+      await executeSyncBatch(batchCustom, {
+        sourcesDir,
+        backupRoot,
+        logFile: customLogFile,
+        skipAgentCheck: true
+      });
+      const customLogContent = await fs.promises.readFile(customLogFile, 'utf8');
+      assert.ok(customLogContent.includes('sess138custom'), 'Custom log file phải ghi nhận session sess138custom');
+
+      // Part 2: Run with logFile: null (phải không ghi vào production log)
+      const batchNull = {
+        syncSessionId: 'sess138null',
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/test.md' }]
+      };
+      await executeSyncBatch(batchNull, {
+        sourcesDir,
+        backupRoot,
+        logFile: null,
+        skipAgentCheck: true
+      });
+      const prodLogContentNull = await getProdLogContent();
+      assert.strictEqual(
+        prodLogContentNull.includes('sess138null'),
+        false,
+        'Không được ghi sess138null vào production log khi logFile là null'
+      );
+
+      // Part 3: Run with omitted logFile in test env (phải không ghi vào production log)
+      const batchOmitted = {
+        syncSessionId: 'sess138omitted',
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/test.md' }]
+      };
+      await executeSyncBatch(batchOmitted, {
+        sourcesDir,
+        backupRoot,
+        skipAgentCheck: true
+      });
+      const prodLogContentOmitted = await getProdLogContent();
+      assert.strictEqual(
+        prodLogContentOmitted.includes('sess138omitted'),
+        false,
+        'Không được ghi sess138omitted vào production log khi logFile bị bỏ qua trong test env'
+      );
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // -------------------------------------------------------------
+  // GROUP 14: Browser Agent & Model Controls (Phase 3)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 14: Browser Agent & Model Controls (Phase 3)');
+
+  await runAsyncTest('14.1 source-api.fetchAvailableAgents fetches /api/agents and returns agents array', async () => {
+    const sourceApi = await import(`../assets/js/source-api.js?fetch-agents=${Date.now()}`);
+    assert.strictEqual(
+      typeof sourceApi.fetchAvailableAgents,
+      'function',
+      'fetchAvailableAgents phải là một function được export từ source-api.js'
+    );
+
+    let calledUrl = null;
+    const mockAgents = [
+      {
+        id: 'agy',
+        label: 'AGY CLI',
+        provider: { id: 'agy', label: 'AGY' }
+      }
+    ];
+    const fakeFetch = async (url) => {
+      calledUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ agents: mockAgents })
+      };
+    };
+
+    const agents = await sourceApi.fetchAvailableAgents(fakeFetch);
+    assert.ok(
+      calledUrl === '/api/agents' || (typeof calledUrl === 'string' && calledUrl.endsWith('/api/agents')),
+      `fetchAvailableAgents phải gọi endpoint /api/agents, nhận: ${calledUrl}`
+    );
+    assert.deepStrictEqual(agents, mockAgents, 'fetchAvailableAgents phải trả về mảng agents');
+  });
+
+  await runAsyncTest('14.2 store.loadAgentOptions discards persisted unavailable agent and selects valid agent, preserving valid state', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    try {
+      globalThis.localStorage.setItem('skillsync.executor.agent', 'unavailable-agent');
+      globalThis.localStorage.setItem('skillsync.executor.model', 'unavailable-model');
+
+      const freshStoreModule = await import(`../assets/js/store.js?agent-opts-14-2=${Date.now()}`);
+      const store = freshStoreModule.appStore || freshStoreModule.default;
+
+      assert.strictEqual(
+        typeof store.loadAgentOptions,
+        'function',
+        'store.loadAgentOptions phải là một function'
+      );
+
+      const fakeFetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          agents: [
+            {
+              id: 'claude',
+              label: 'Claude CLI',
+              provider: { id: 'anthropic-claude', label: 'Anthropic Claude' },
+              models: [
+                { id: 'sonnet', label: 'Sonnet' },
+                { id: 'opus', label: 'Opus' }
+              ],
+              defaultModel: 'sonnet',
+              modelSelection: 'available'
+            },
+            {
+              id: 'copilot',
+              label: 'Copilot CLI',
+              provider: { id: 'copilot', label: 'GitHub Copilot' },
+              models: [],
+              defaultModel: '',
+              modelSelection: 'agent-default'
+            }
+          ]
+        })
+      });
+
+      // 1. Persisted values are invalid/unavailable -> discard and fallback to first valid agent/defaultModel
+      await store.loadAgentOptions(fakeFetch);
+
+      assert.strictEqual(store.state.targetAgent, 'claude', 'targetAgent phải là claude sau khi loại bỏ agent không khả dụng');
+      assert.strictEqual(store.state.executorProvider, 'anthropic-claude', 'executorProvider phải là anthropic-claude');
+      assert.strictEqual(store.state.targetModel, 'sonnet', 'targetModel phải là sonnet');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.agent'), 'claude', 'localStorage phải cập nhật agent claude');
+
+      // 2. Persisted values are valid -> loadAgentOptions preserves them instead of discarding
+      globalThis.localStorage.setItem('skillsync.executor.agent', 'claude');
+      globalThis.localStorage.setItem('skillsync.executor.model', 'opus');
+
+      const freshStoreModule2 = await import(`../assets/js/store.js?agent-opts-14-2-valid=${Date.now()}`);
+      const store2 = freshStoreModule2.appStore || freshStoreModule2.default;
+
+      await store2.loadAgentOptions(fakeFetch);
+
+      assert.strictEqual(store2.state.targetAgent, 'claude', 'targetAgent phải giữ nguyên giá trị hợp lệ đã lưu');
+      assert.strictEqual(store2.state.executorProvider, 'anthropic-claude', 'executorProvider phải suy ra anthropic-claude');
+      assert.strictEqual(store2.state.targetModel, 'opus', 'targetModel phải giữ nguyên model opus hợp lệ đã lưu');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.agent'), 'claude', 'localStorage agent phải giữ claude');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.model'), 'opus', 'localStorage model phải giữ opus');
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+  });
+
+  await runAsyncTest('14.3 store.setTargetAgent updates derived executorProvider and targetModel, and store.setTargetModel persists model', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    try {
+      const freshStoreModule = await import(`../assets/js/store.js?agent-target-14-3=${Date.now()}`);
+      const store = freshStoreModule.appStore || freshStoreModule.default;
+
+      const agentsFixture = [
+        {
+          id: 'claude',
+          label: 'Claude CLI',
+          provider: { id: 'anthropic-claude', label: 'Anthropic Claude' },
+          models: [{ id: 'sonnet', label: 'Sonnet' }],
+          defaultModel: 'sonnet',
+          modelSelection: 'available'
+        },
+        {
+          id: 'copilot',
+          label: 'Copilot CLI',
+          provider: { id: 'copilot', label: 'GitHub Copilot' },
+          models: [],
+          defaultModel: '',
+          modelSelection: 'agent-default'
+        }
+      ];
+
+      if (typeof store.loadAgentOptions === 'function') {
+        await store.loadAgentOptions(async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ agents: agentsFixture })
+        }));
+      } else {
+        store.state.agentOptions = agentsFixture;
+      }
+
+      // 1. Calling store.setTargetAgent('copilot')
+      assert.strictEqual(
+        typeof store.setTargetAgent,
+        'function',
+        'store.setTargetAgent phải là một function'
+      );
+      store.setTargetAgent('copilot');
+
+      assert.strictEqual(store.state.targetAgent, 'copilot', 'store.state.targetAgent phải là copilot');
+      assert.strictEqual(store.state.executorProvider, 'copilot', 'store.state.executorProvider phải là copilot (derived from agent)');
+      assert.strictEqual(store.state.targetModel, '', 'store.state.targetModel phải là chuỗi rỗng khi modelSelection là agent-default');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.agent'), 'copilot', 'localStorage skillsync.executor.agent phải là copilot');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.model'), '', 'localStorage skillsync.executor.model phải là chuỗi rỗng');
+
+      // 2. Calling store.setTargetAgent('claude')
+      store.setTargetAgent('claude');
+
+      assert.strictEqual(store.state.targetAgent, 'claude', 'store.state.targetAgent phải là claude');
+      assert.strictEqual(store.state.executorProvider, 'anthropic-claude', 'store.state.executorProvider phải là anthropic-claude');
+      assert.strictEqual(store.state.targetModel, 'sonnet', 'store.state.targetModel phải là sonnet');
+
+      // 3. Calling store.setTargetModel('custom-model')
+      assert.strictEqual(
+        typeof store.setTargetModel,
+        'function',
+        'store.setTargetModel phải là một function'
+      );
+      store.setTargetModel('custom-model');
+
+      assert.strictEqual(store.state.targetModel, 'custom-model', 'store.state.targetModel phải cập nhật thành custom-model');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.model'), 'custom-model', 'localStorage skillsync.executor.model phải lưu custom-model');
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+  });
+
+  await runAsyncTest('14.4 startSyncBatch packages aiEngine with derived provider and omits model for agent-default', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const originalFetch = globalThis.fetch;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    const freshStoreModule = await import(`../assets/js/store.js?sync-batch-14-4=${Date.now()}`);
+    const store = freshStoreModule.appStore || freshStoreModule.default;
+
+    store.state.pendingBatch = {
+      syncSessionId: 'sess-test-14-4',
+      targetSource: { repo: 'target-repo', branch: 'main' },
+      referenceSource: { repo: 'ref-repo', branch: 'main' },
+      matchingFiles: [{ path: 'skills/test.md' }],
+      newFiles: [],
+      selectedFiles: ['skills/test.md']
+    };
+
+    const agentOptions = [
+      {
+        id: 'claude',
+        label: 'Claude CLI',
+        provider: { id: 'anthropic-claude', label: 'Anthropic Claude' },
+        models: [{ id: 'sonnet', label: 'Sonnet' }],
+        defaultModel: 'sonnet',
+        modelSelection: 'available'
+      },
+      {
+        id: 'copilot',
+        label: 'Copilot CLI',
+        provider: { id: 'copilot', label: 'GitHub Copilot' },
+        models: [],
+        defaultModel: '',
+        modelSelection: 'agent-default'
+      }
+    ];
+
+    if (typeof store.loadAgentOptions === 'function') {
+      await store.loadAgentOptions(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ agents: agentOptions })
+      }));
+    } else {
+      store.state.agentOptions = agentOptions;
+    }
+
+    let capturedPayload = null;
+    const fakeFetch = async (url, options) => {
+      if (options && options.body) {
+        try {
+          capturedPayload = JSON.parse(options.body);
+        } catch {
+          capturedPayload = options.body;
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          syncSessionId: 'sess-test-14-4',
+          status: 'ready-for-review',
+          changedFiles: []
+        })
+      };
+    };
+    fakeFetch.fetchImpl = fakeFetch;
+
+    globalThis.fetch = fakeFetch;
+
+    try {
+      const syncBatch = typeof store.startSyncBatch === 'function'
+        ? store.startSyncBatch.bind(store)
+        : (typeof store.executePendingBatch === 'function' ? store.executePendingBatch.bind(store) : null);
+
+      assert.ok(syncBatch, 'store.startSyncBatch hoặc store.executePendingBatch phải tồn tại');
+
+      // Test with targetAgent = 'copilot' (agent-default)
+      capturedPayload = null;
+      if (typeof store.setTargetAgent === 'function') {
+        store.setTargetAgent('copilot');
+      } else {
+        store.state.targetAgent = 'copilot';
+      }
+
+      await syncBatch(fakeFetch);
+
+      assert.ok(capturedPayload, 'fakeFetch phải nhận được payload khi targetAgent = copilot');
+      assert.strictEqual(capturedPayload.aiEngine?.agent, 'copilot', 'aiEngine.agent phải là copilot');
+      assert.strictEqual(capturedPayload.aiEngine?.provider, 'copilot', 'aiEngine.provider phải là copilot');
+      assert.strictEqual('model' in (capturedPayload.aiEngine || {}), false, "'model' không được có trong aiEngine khi dùng agent-default");
+
+      // Test with targetAgent = 'claude' and targetModel = 'sonnet'
+      capturedPayload = null;
+      if (typeof store.setTargetAgent === 'function') {
+        store.setTargetAgent('claude');
+      } else {
+        store.state.targetAgent = 'claude';
+      }
+      if (typeof store.setTargetModel === 'function') {
+        store.setTargetModel('sonnet');
+      } else {
+        store.state.targetModel = 'sonnet';
+      }
+
+      await syncBatch(fakeFetch);
+
+      assert.ok(capturedPayload, 'fakeFetch phải nhận được payload khi targetAgent = claude');
+      assert.strictEqual(capturedPayload.aiEngine?.agent, 'claude', 'aiEngine.agent phải là claude');
+      assert.strictEqual(capturedPayload.aiEngine?.provider, 'anthropic-claude', 'aiEngine.provider phải là anthropic-claude');
+      assert.strictEqual(capturedPayload.aiEngine?.model, 'sonnet', 'aiEngine.model phải là sonnet');
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+      if (originalFetch !== undefined) {
+        globalThis.fetch = originalFetch;
+      } else {
+        delete globalThis.fetch;
+      }
+    }
+  });
+
+  await runAsyncTest('14.5 Empty capabilities disable sync and fail locally without network execute request', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const originalFetch = globalThis.fetch;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    let networkExecuteCalled = false;
+    const fakeExecuteFetch = async (url) => {
+      if (typeof url === 'string' && url.includes('/api/sync/execute')) {
+        networkExecuteCalled = true;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          syncSessionId: 'sess-empty-caps',
+          status: 'ready-for-review',
+          changedFiles: []
+        })
+      };
+    };
+    fakeExecuteFetch.fetchImpl = fakeExecuteFetch;
+    globalThis.fetch = fakeExecuteFetch;
+
+    try {
+      const freshStoreModule = await import(`../assets/js/store.js?empty-caps-14-5=${Date.now()}`);
+      const store = freshStoreModule.appStore || freshStoreModule.default;
+
+      store.state.pendingBatch = {
+        syncSessionId: 'session-14-5',
+        targetSource: { repo: 'target-repo', branch: 'main' },
+        referenceSource: { repo: 'ref-repo', branch: 'main' },
+        matchingFiles: [{ path: 'skills/demo.md' }],
+        newFiles: [],
+        selectedFiles: ['skills/demo.md']
+      };
+
+      assert.strictEqual(
+        typeof store.loadAgentOptions,
+        'function',
+        'store.loadAgentOptions phải là một function'
+      );
+
+      const fakeFetchEmpty = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ agents: [] })
+      });
+
+      await store.loadAgentOptions(fakeFetchEmpty);
+
+      assert.strictEqual(store.state.agentOptionsStatus, 'loaded', 'agentOptionsStatus phải là loaded');
+      assert.strictEqual(Array.isArray(store.state.agentOptions), true, 'agentOptions phải là mảng');
+      assert.strictEqual(store.state.agentOptions.length, 0, 'agentOptions.length phải là 0');
+      assert.strictEqual(store.state.targetAgent, '', 'targetAgent phải rỗng khi không có agents');
+
+      const syncBatch = typeof store.startSyncBatch === 'function'
+        ? store.startSyncBatch.bind(store)
+        : (typeof store.executePendingBatch === 'function' ? store.executePendingBatch.bind(store) : null);
+
+      assert.ok(syncBatch, 'store.startSyncBatch hoặc store.executePendingBatch phải tồn tại');
+
+      let syncFailed = false;
+      try {
+        const result = await syncBatch(fakeExecuteFetch);
+        if (result === null || store.state.executionError || store.state.lastBatchError) {
+          syncFailed = true;
+        }
+      } catch {
+        syncFailed = true;
+      }
+
+      assert.strictEqual(
+        syncFailed,
+        true,
+        'store.startSyncBatch phải reject hoặc ghi nhận lỗi khi capabilities rỗng'
+      );
+      assert.strictEqual(
+        networkExecuteCalled,
+        false,
+        'Không được gọi network execute request khi capabilities rỗng'
+      );
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+      if (originalFetch !== undefined) {
+        globalThis.fetch = originalFetch;
+      } else {
+        delete globalThis.fetch;
+      }
+    }
+  });
+
+  await runAsyncTest('14.6 workstation.js defines accessible agent/model controls and provider guidance notice', async () => {
+    const workstationPath = path.join(ROOT_DIR, 'assets/js/views/workstation.js');
+    const workstationSource = fs.readFileSync(workstationPath, 'utf8');
+
+    // 1. Notice text #executor-provider-help containing required guidance
+    assert.ok(
+      workstationSource.includes('id="executor-provider-help"') || workstationSource.includes("id='executor-provider-help'"),
+      'workstation.js phải có phần tử notice #executor-provider-help'
+    );
+    assert.ok(
+      workstationSource.includes('Provider được xác định theo Agent CLI. Chọn Agent để đổi Provider; sau đó chọn Model nếu Agent hỗ trợ liệt kê model.'),
+      'workstation.js phải có nội dung hướng dẫn: "Provider được xác định theo Agent CLI. Chọn Agent để đổi Provider; sau đó chọn Model nếu Agent hỗ trợ liệt kê model."'
+    );
+
+    // 2. Accessible labels for controls
+    assert.ok(
+      workstationSource.includes('<label for="executor-agent-select"') || workstationSource.includes("<label for='executor-agent-select'"),
+      'workstation.js phải có nhãn cho agent select: <label for="executor-agent-select"'
+    );
+    assert.ok(
+      workstationSource.includes('<label for="executor-model-select"') || workstationSource.includes("<label for='executor-model-select'"),
+      'workstation.js phải có nhãn cho model select: <label for="executor-model-select"'
+    );
+
+    // 3. Refresh button with accessible title or aria-label
+    assert.ok(
+      workstationSource.includes('id="btn-refresh-agents"') || workstationSource.includes("id='btn-refresh-agents'"),
+      'workstation.js phải có nút làm mới #btn-refresh-agents'
+    );
+    assert.ok(
+      /id=["']btn-refresh-agents["'][^>]*(aria-label|title)=/i.test(workstationSource) ||
+      /(aria-label|title)=[^>]*id=["']btn-refresh-agents["']/i.test(workstationSource),
+      'Nút #btn-refresh-agents phải có thuộc tính title hoặc aria-label để đảm bảo accessibility'
+    );
+  });
+
+  // -------------------------------------------------------------
+  // GROUP 15: Configurable AI Engine End-to-End Regressions (Phase 4)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 15: Configurable AI Engine End-to-End Regressions (Phase 4)');
+
+  await runAsyncTest('15.1 AI engine rejects forged provider before backup', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-regressions-15-1');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupFolder = path.join(sourcesDir, '.skillsync', 'backups');
+    const syncSessionId = 'sess-forged-15-1';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'existing.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'existing.md');
+
+      await fs.promises.writeFile(targetPath, '# Target 15.1\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference 15.1\n', 'utf8');
+
+      const forgedBatch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/existing.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'attacker-provider',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return { exitCode: 0, status: 0, code: 0, stdout: '', stderr: '' };
+      };
+
+      await assert.rejects(
+        () => executeSyncBatch(forgedBatch, {
+          sourcesDir,
+          backupRoot: backupFolder,
+          skipAgentCheck: true,
+          runProcess: mockRunProcess
+        }),
+        (err) => err.code === 'INVALID_AI_ENGINE_SELECTION' && err.failedStep === 'preflight'
+      );
+
+      // Verify no backup folder was created under sourcesDir/.skillsync/backups
+      assert.strictEqual(
+        fs.existsSync(backupFolder),
+        false,
+        'Không được tạo thư mục backup under sourcesDir/.skillsync/backups'
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(sourcesDir, '.skillsync')),
+        false,
+        'Không được tạo bất kỳ thư mục .skillsync nào'
+      );
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('15.2 Empty capabilities (agents: []) blocks execution locally before network request', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const originalFetch = globalThis.fetch;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    let networkExecuteCalled = false;
+    const fakeExecuteFetch = async (url) => {
+      if (typeof url === 'string' && url.includes('/api/sync/execute')) {
+        networkExecuteCalled = true;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true })
+      };
+    };
+    fakeExecuteFetch.fetchImpl = fakeExecuteFetch;
+    globalThis.fetch = fakeExecuteFetch;
+
+    try {
+      const freshStoreModule = await import(`../assets/js/store.js?empty-caps-15-2=${Date.now()}`);
+      const store = freshStoreModule.appStore || freshStoreModule.default;
+
+      store.state.agentOptions = [];
+      store.state.agentOptionsStatus = 'loaded';
+      store.state.targetAgent = '';
+      store.state.pendingBatch = {
+        syncSessionId: 'session-15-2',
+        targetSource: { repo: 'target-repo', branch: 'main' },
+        referenceSource: { repo: 'ref-repo', branch: 'main' },
+        matchingFiles: [{ path: 'skills/demo.md' }],
+        newFiles: [],
+        selectedFiles: ['skills/demo.md']
+      };
+
+      await assert.rejects(
+        () => store.startSyncBatch(fakeExecuteFetch),
+        (err) => err.code === 'NO_AGENT_AVAILABLE' || store.state.errorCode === 'NO_AGENT_AVAILABLE'
+      );
+
+      assert.strictEqual(networkExecuteCalled, false, 'networkExecuteCalled must be false');
+      assert.strictEqual(store.state.errorCode, 'NO_AGENT_AVAILABLE', 'store.state.errorCode must be NO_AGENT_AVAILABLE');
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+      if (originalFetch !== undefined) {
+        globalThis.fetch = originalFetch;
+      } else {
+        delete globalThis.fetch;
+      }
+    }
+  });
+
+  await runAsyncTest('15.3 Stale Model persistence is discarded on capability reload', async () => {
+    const originalLocalStorage = globalThis.localStorage;
+    const storageMap = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (storageMap.has(k) ? storageMap.get(k) : null),
+      setItem: (k, v) => { storageMap.set(k, String(v)); },
+      removeItem: (k) => { storageMap.delete(k); },
+      clear: () => { storageMap.clear(); }
+    };
+
+    try {
+      globalThis.localStorage.setItem('skillsync.executor.agent', 'claude');
+      globalThis.localStorage.setItem('skillsync.executor.model', 'non-existent-stale-model');
+
+      const freshStoreModule = await import(`../assets/js/store.js?stale-model-15-3=${Date.now()}`);
+      const store = freshStoreModule.appStore || freshStoreModule.default;
+
+      const fakeFetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          agents: [
+            {
+              id: 'claude',
+              label: 'Claude CLI',
+              provider: { id: 'anthropic-claude', label: 'Anthropic Claude' },
+              models: [{ id: 'claude-3-5-sonnet', label: 'Claude 3.5 Sonnet' }],
+              defaultModel: 'claude-3-5-sonnet',
+              modelSelection: 'available'
+            }
+          ]
+        })
+      });
+
+      await store.loadAgentOptions(fakeFetch);
+
+      assert.strictEqual(store.state.targetModel, 'claude-3-5-sonnet', 'store.state.targetModel must be normalized to defaultModel');
+      assert.strictEqual(globalThis.localStorage.getItem('skillsync.executor.model'), 'claude-3-5-sonnet', 'localStorage model must be updated to valid defaultModel');
+    } finally {
+      if (originalLocalStorage !== undefined) {
+        globalThis.localStorage = originalLocalStorage;
+      } else {
+        delete globalThis.localStorage;
+      }
+    }
+  });
+
+  await runAsyncTest('15.4 agent-default mode executes safely omitting model in payload', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-regressions-15-4');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'sess-regress-15-4';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'copilot-test.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'copilot-test.md');
+
+      await fs.promises.writeFile(targetPath, '# Target Copilot Test\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference Copilot Test\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/copilot-test.md' }],
+        aiEngine: {
+          agent: 'copilot',
+          provider: 'copilot'
+        }
+      };
+
+      let passedPrompt = null;
+      let executedArgs = null;
+      let executedCommand = null;
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs, extraOptions) => {
+        const cmd = typeof cmdOrOptions === 'string' ? cmdOrOptions : cmdOrOptions.command;
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        const opts = (typeof cmdOrOptions === 'object' && !Array.isArray(cmdOrOptions) && !maybeArgs) ? cmdOrOptions : (extraOptions || {});
+
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'copilot 1.0.0\n',
+            stderr: ''
+          };
+        }
+
+        executedCommand = cmd;
+        executedArgs = args;
+        passedPrompt = opts?.input || '';
+
+        return {
+          exitCode: 0,
+          status: 0,
+          code: 0,
+          stdout: '# Merged via copilot agent-default\n',
+          stderr: ''
+        };
+      };
+
+      const result = await executeSyncBatch(batch, {
+        sourcesDir,
+        backupRoot,
+        logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+        skipAgentCheck: true,
+        runProcess: mockRunProcess
+      });
+
+      assert.strictEqual(result.success, true, 'Execution must succeed');
+      assert.strictEqual(result.model, null, 'result.model must be null when using agent-default');
+      assert.strictEqual(result.agent, 'copilot', 'result.agent must be copilot');
+      assert.strictEqual(result.provider, 'copilot', 'result.provider must be copilot');
+      assert.ok(passedPrompt !== null && passedPrompt.length > 0, 'Prompt must be passed to the adapter');
+      assert.ok(passedPrompt.includes('copilot-test.md'), 'Prompt must reference target/reference file');
+      assert.strictEqual(executedArgs.includes('--model'), false, 'Executed args must omit --model for agent-default');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('15.5 Sandbox setup failure halts sync immediately without falling back to host execution', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-regressions-15-5');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'sess-regress-15-5';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'sandbox-test.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'sandbox-test.md');
+
+      await fs.promises.writeFile(targetPath, '# Target Sandbox Test\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference Sandbox Test\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/sandbox-test.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const commandInvocations = [];
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const cmd = typeof cmdOrOptions === 'string' ? cmdOrOptions : cmdOrOptions.command;
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        commandInvocations.push({ cmd, args });
+
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+
+        // Sandbox setup failure
+        return {
+          exitCode: 1,
+          status: 1,
+          code: 1,
+          stdout: '',
+          stderr: 'bwrap: sandbox creation failed'
+        };
+      };
+
+      await assert.rejects(
+        () => executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+          skipAgentCheck: true,
+          sandbox: { available: true, command: 'bwrap', args: ['--unshare-all'] },
+          runProcess: mockRunProcess
+        }),
+        (err) => err.code === 'AGENT_EXECUTION_FAILED' || err.code === 'SANDBOX_UNAVAILABLE' || err.code === 'SANDBOX_REQUIRED'
+      );
+
+      // Verify it NEVER attempted host fallback
+      const sandboxInvocations = commandInvocations.filter(inv => inv.cmd === 'bwrap');
+      assert.strictEqual(sandboxInvocations.length, 1, 'Phải dừng ngay sau lần thực thi sandbox thất bại');
+
+      const unsandboxedFallback = commandInvocations.filter(inv =>
+        inv.cmd !== 'bwrap' && inv.args.includes('--dangerously-skip-permissions')
+      );
+      assert.strictEqual(unsandboxedFallback.length, 0, 'Không bao giờ fallback để chạy trực tiếp trên host');
+
+      // Also verify runAgentMerge directly when sandbox command fails or is missing
+      const directMergeRes = await runAgentMerge({
+        agent: 'claude',
+        sandbox: { available: true, command: 'bwrap', args: ['--unshare-all'] },
+        runProcess: mockRunProcess
+      });
+      assert.strictEqual(directMergeRes.ok, false);
+      assert.strictEqual(directMergeRes.code, 'AGENT_EXECUTION_FAILED');
+
+      const directMissingSandboxRes = await runAgentMerge({
+        agent: 'claude',
+        sandbox: { available: true, command: null },
+        runProcess: mockRunProcess
+      });
+      assert.strictEqual(directMissingSandboxRes.ok, false);
+      assert.ok(
+        directMissingSandboxRes.code === 'SANDBOX_REQUIRED' || directMissingSandboxRes.code === 'SANDBOX_UNAVAILABLE' || directMissingSandboxRes.code === 'AGENT_EXECUTION_FAILED',
+        `runAgentMerge must reject missing sandbox command with sandbox code, got: ${directMissingSandboxRes.code}`
+      );
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('15.6 Malformed or oversized (>5MB) adapter output triggers structured error and rollback', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-regressions-15-6');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'sess-regress-15-6';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const originalTargetContent = '# Target Content 15.6\nMust be restored after oversized output.';
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'oversized-test.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'oversized-test.md');
+
+      await fs.promises.writeFile(targetPath, originalTargetContent, 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference Content 15.6\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/oversized-test.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const oversizedStdout = Buffer.alloc(5.5 * 1024 * 1024, 'x').toString();
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return {
+          exitCode: 0,
+          status: 0,
+          code: 0,
+          stdout: oversizedStdout,
+          stderr: ''
+        };
+      };
+
+      await assert.rejects(
+        () => executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+          skipAgentCheck: true,
+          runProcess: mockRunProcess
+        }),
+        (err) => err.code === 'INVALID_AGENT_OUTPUT' || err.code === 'AGENT_EXECUTION_FAILED' || err.code === 'OUTPUT_LIMIT_EXCEEDED'
+      );
+
+      // Verify target file was rolled back
+      const targetOnDisk = await fs.promises.readFile(targetPath, 'utf8');
+      assert.strictEqual(targetOnDisk, originalTargetContent, 'Target file content must be rolled back to original');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('15.7 Post-backup adapter failure guarantees byte-for-byte rollback restoration of target files', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-regressions-15-7');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'sess-regress-15-7';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const initialBytes = Buffer.from(
+        '# Critical Header\n\tIndented line\r\nSpecial Unicode: 🔥🚀 100% — byte accuracy check\nLast Line without newline',
+        'utf8'
+      );
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'byte-accuracy.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'byte-accuracy.md');
+
+      await fs.promises.writeFile(targetPath, initialBytes);
+      await fs.promises.writeFile(referencePath, '# Reference Content\n', 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/byte-accuracy.md' }],
+        aiEngine: {
+          agent: 'claude',
+          provider: 'anthropic-claude',
+          model: 'claude-3-5-sonnet'
+        }
+      };
+
+      const mockRunProcess = async (cmdOrOptions, maybeArgs) => {
+        const args = Array.isArray(maybeArgs) ? maybeArgs : (cmdOrOptions?.args || []);
+        if (args.includes('--version')) {
+          return {
+            exitCode: 0,
+            status: 0,
+            code: 0,
+            stdout: 'claude 1.0.0\nmodels: claude-3-5-sonnet\n',
+            stderr: ''
+          };
+        }
+        return {
+          exitCode: 1,
+          status: 1,
+          code: 1,
+          stdout: '',
+          stderr: 'CLI failed post-backup'
+        };
+      };
+
+      let thrown = null;
+      try {
+        await executeSyncBatch(batch, {
+          sourcesDir,
+          backupRoot,
+          logFile: path.join(tmpFixtureRoot, 'sync-execution.log'),
+          skipAgentCheck: true,
+          runProcess: mockRunProcess
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      assert.ok(thrown, 'executeSyncBatch must reject on CLI failure');
+      assert.strictEqual(thrown.failedStep, 'merge', 'failedStep must be merge');
+
+      // Assert byte-for-byte exact equality
+      const currentBytes = await fs.promises.readFile(targetPath);
+      assert.strictEqual(
+        Buffer.compare(currentBytes, initialBytes),
+        0,
+        'Target file must be byte-for-byte restored to exact initial bytes'
+      );
+      assert.deepStrictEqual(currentBytes, initialBytes, 'Target file buffer must match initial bytes exactly');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  // -------------------------------------------------------------
+  // GROUP 16: Multi-File Diff Preview (Batch API, Store, UI)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 16: Multi-File Diff Preview (Batch API, Store, UI)');
+
+  const tmpBatchPreviewRoot = path.join(ROOT_DIR, 'tests', '.tmp-diff-batch-preview');
+  const tmpBatchSources = path.join(tmpBatchPreviewRoot, 'sources');
+
+  try {
+    await runAsyncTest('16.1 buildPreviewDiffBatch trả danh sách diff files hợp lệ cho nhiều path', async () => {
+      await fs.promises.rm(tmpBatchPreviewRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'target-proj', 'skills', 'skill-a'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'target-proj', 'skills', 'skill-b'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'target-proj', '.agents', 'plugins'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'ref-proj', 'skills', 'skill-a'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'ref-proj', 'skills', 'skill-b'), { recursive: true });
+      await fs.promises.mkdir(path.join(tmpBatchSources, 'ref-proj', '.agents', 'plugins'), { recursive: true });
+
+      await fs.promises.writeFile(
+        path.join(tmpBatchSources, 'target-proj', 'skills', 'skill-a', 'SKILL.md'),
+        'line 1 target\nline 2 same\n'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpBatchSources, 'ref-proj', 'skills', 'skill-a', 'SKILL.md'),
+        'line 1 ref\nline 2 same\n'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpBatchSources, 'ref-proj', 'skills', 'skill-b', 'SKILL.md'),
+        'new file in ref\n'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpBatchSources, 'target-proj', '.agents', 'plugins', 'marketplace.json'),
+        '{"version": "1.0.0"}\n'
+      );
+      await fs.promises.writeFile(
+        path.join(tmpBatchSources, 'ref-proj', '.agents', 'plugins', 'marketplace.json'),
+        '{"version": "1.1.0"}\n'
+      );
+
+      const result = await buildPreviewDiffBatch(
+        'target-proj',
+        'ref-proj',
+        ['skills/skill-a/SKILL.md', 'skills/skill-b/SKILL.md'],
+        { sourcesDir: tmpBatchSources }
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.mode, 'preview');
+      assert.strictEqual(result.files.length, 2);
+      assert.strictEqual(result.files[0].path, 'skills/skill-a/SKILL.md');
+      assert.strictEqual(result.files[0].status, 'MODIFIED');
+      assert.strictEqual(result.files[1].path, 'skills/skill-b/SKILL.md');
+      assert.strictEqual(result.files[1].status, 'NEW');
+      assert.ok(Array.isArray(result.files[0].blocks) && result.files[0].blocks.length > 0, 'Phải có diff blocks');
+      assert.ok(Array.isArray(result.files[0].blocks[0].rows) && result.files[0].blocks[0].rows.length > 0, 'Phải có diff rows');
+    });
+
+    await runAsyncTest('16.2 buildPreviewDiffBatch validate input: chặn paths rỗng, >100 paths, project không an toàn', async () => {
+      let emptyBlocked = false;
+      try {
+        await buildPreviewDiffBatch('target-proj', 'ref-proj', [], { sourcesDir: tmpBatchSources });
+      } catch (err) {
+        emptyBlocked = err.statusCode === 400 && err.code === 'INVALID_DIFF_PREVIEW_BATCH_REQUEST';
+      }
+      assert.strictEqual(emptyBlocked, true, 'Phải chặn paths rỗng');
+
+      let limitBlocked = false;
+      const overLimitPaths = Array.from({ length: 101 }, (_, i) => `file-${i}.txt`);
+      try {
+        await buildPreviewDiffBatch('target-proj', 'ref-proj', overLimitPaths, { sourcesDir: tmpBatchSources });
+      } catch (err) {
+        limitBlocked = err.statusCode === 400 && err.code === 'INVALID_DIFF_PREVIEW_BATCH_REQUEST';
+      }
+      assert.strictEqual(limitBlocked, true, 'Phải chặn vượt quá 100 paths');
+
+      let unsafeBlocked = false;
+      try {
+        await buildPreviewDiffBatch('../unsafe', 'ref-proj', ['skills/skill-a/SKILL.md'], { sourcesDir: tmpBatchSources });
+      } catch (err) {
+        unsafeBlocked = err.statusCode === 400 && err.code === 'INVALID_DIFF_PREVIEW_BATCH_REQUEST';
+      }
+      assert.strictEqual(unsafeBlocked, true, 'Phải chặn project name không an toàn');
+
+      let sameProjectBlocked = false;
+      try {
+        await buildPreviewDiffBatch('target-proj', 'target-proj', ['skills/skill-a/SKILL.md'], { sourcesDir: tmpBatchSources });
+      } catch (err) {
+        sameProjectBlocked = err.statusCode === 400 && err.code === 'INVALID_DIFF_PREVIEW_BATCH_REQUEST';
+      }
+      assert.strictEqual(sameProjectBlocked, true, 'Phải chặn target và reference trùng nhau');
+    });
+
+    await runAsyncTest('16.3 buildPreviewDiffBatch ghi nhận partial errors cho file nhạy cảm và file không tồn tại', async () => {
+      const result = await buildPreviewDiffBatch(
+        'target-proj',
+        'ref-proj',
+        ['skills/skill-a/SKILL.md', '.env', 'non-existent.txt'],
+        { sourcesDir: tmpBatchSources }
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.files.length, 1);
+      assert.strictEqual(result.errors.length, 2);
+      assert.strictEqual(result.errors[0].code, 'DIFF_PREVIEW_FORBIDDEN');
+      assert.strictEqual(result.errors[1].code, 'DIFF_PREVIEW_NOT_FOUND');
+    });
+
+    await runAsyncTest('16.4 Route POST /api/diff/preview/batch xử lý request HTTP thành công', async () => {
+      const bodyPayload = JSON.stringify({
+        target: 'target-proj',
+        reference: 'ref-proj',
+        paths: ['skills/skill-a/SKILL.md']
+      });
+
+      const mockReq = {
+        method: 'POST',
+        url: '/api/diff/preview/batch',
+        headers: { 'content-type': 'application/json' },
+        on(event, handler) {
+          if (event === 'data') handler(Buffer.from(bodyPayload));
+          if (event === 'end') handler();
+          return this;
+        }
+      };
+
+      let responseCode = 0;
+      let responseBody = '';
+      const mockRes = {
+        statusCode: 200,
+        writeHead(code) { responseCode = code; return this; },
+        setHeader() { return this; },
+        end(data) { if (data) responseBody = data; return this; }
+      };
+
+      const parsedUrl = new URL(mockReq.url, 'http://127.0.0.1:3000');
+      await handleApi(mockReq, mockRes, parsedUrl, { sourcesDir: tmpBatchSources });
+      assert.strictEqual(responseCode, 200);
+      const parsed = JSON.parse(responseBody);
+      assert.strictEqual(parsed.success, true);
+      assert.strictEqual(parsed.files.length, 1);
+    });
+
+    await runAsyncTest('16.5 fetchDiffPreviewBatch gửi request chuẩn xác', async () => {
+      const { fetchDiffPreviewBatch } = await import('../assets/js/source-api.js');
+      let requestedUrl = '';
+      let requestedBody = null;
+      const mockFetch = async (url, opts) => {
+        requestedUrl = url;
+        requestedBody = JSON.parse(opts.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            mode: 'preview',
+            files: [{ id: 'f1', path: 'skills/test/SKILL.md' }],
+            errors: []
+          })
+        };
+      };
+
+      const res = await fetchDiffPreviewBatch('target-proj', 'ref-proj', ['skills/test/SKILL.md'], mockFetch);
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.files.length, 1);
+      assert.strictEqual(requestedBody.paths[0], 'skills/test/SKILL.md');
+      assert.ok(requestedUrl.endsWith('/api/diff/preview/batch'), 'Phải gọi đúng endpoint /api/diff/preview/batch');
+    });
+
+    await runAsyncTest('16.6 store.openPreviewDiffBatch cập nhật diffFiles và diffMode preview', async () => {
+      const { Store } = await import(`../assets/js/store.js?group16=${Date.now()}`);
+      const testStore = new Store({
+        targetSource: { repo: 'target-proj' },
+        referenceSource: { repo: 'ref-proj' }
+      });
+
+      const mockFetch = async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          mode: 'preview',
+          files: [
+            { id: 'f1', path: 'skills/skill-a/SKILL.md', status: 'MODIFIED', blocks: [] },
+            { id: 'f2', path: 'skills/skill-b/SKILL.md', status: 'NEW', blocks: [] }
+          ],
+          errors: []
+        })
+      });
+
+      await testStore.openPreviewDiffBatch(['skills/skill-a/SKILL.md', 'skills/skill-b/SKILL.md'], { fetchImpl: mockFetch });
+      const state = testStore.getState();
+
+      assert.strictEqual(state.diffMode, 'preview');
+      assert.strictEqual(state.activeView, 'diff-inspector');
+      assert.strictEqual(state.diffFiles.length, 2);
+      assert.strictEqual(state.currentDiffFileId, 'f1');
+    });
+
+    await runAsyncTest('16.7 Workstation footer tự động cập nhật nhãn Xem diff (N file) khi có nhiều file diff', async () => {
+      const workstationContent = await fs.promises.readFile(path.join(ROOT_DIR, 'assets', 'js', 'views', 'workstation.js'), 'utf8');
+      assert.ok(workstationContent.includes('`Xem diff (${selectedDiffsCount} file)`'), 'Workstation phải có logic cập nhật nhãn Xem diff nhiều file');
+      assert.ok(workstationContent.includes('state.fileTrees'), 'Workstation phải truy vấn state.fileTrees');
+    });
+
+    await runAsyncTest('16.8 Diff Inspector Left Rail hiển thị số tệp và nhãn preview đa tệp', async () => {
+      const diffInspectorContent = await fs.promises.readFile(path.join(ROOT_DIR, 'assets', 'js', 'views', 'diff-inspector.js'), 'utf8');
+      assert.ok(diffInspectorContent.includes('`Preview trước sync${countLabel}`'), 'Diff Inspector phải có nhãn badge đa tệp');
+      assert.ok(diffInspectorContent.includes('đang đối chiếu ${diffFiles.length} tệp'), 'Diff Inspector phải có notice đa tệp');
+    });
+
+    await runAsyncTest('16.9 buildPreviewDiffBatch cho phép preview tệp trong .agents/ và chặn tệp nhạy cảm .git, .env', async () => {
+      const result = await buildPreviewDiffBatch(
+        'target-proj',
+        'ref-proj',
+        ['.agents/plugins/marketplace.json', '.git/config', '.env'],
+        { sourcesDir: tmpBatchSources }
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.files.length, 1);
+      assert.strictEqual(result.files[0].path, '.agents/plugins/marketplace.json');
+      assert.strictEqual(result.files[0].status, 'MODIFIED');
+      assert.strictEqual(result.errors.length, 2);
+      assert.strictEqual(result.errors[0].code, 'DIFF_PREVIEW_FORBIDDEN');
+      assert.strictEqual(result.errors[1].code, 'DIFF_PREVIEW_FORBIDDEN');
+    });
+
+    await runAsyncTest('16.10 Workstation.js định nghĩa phần tử và xử lý lỗi diff preview workstation-diff-error-toast', async () => {
+      const workstationContent = await fs.promises.readFile(path.join(ROOT_DIR, 'assets', 'js', 'views', 'workstation.js'), 'utf8');
+      assert.ok(workstationContent.includes('workstation-diff-error-toast'), 'Workstation phải có #workstation-diff-error-toast');
+      assert.ok(workstationContent.includes('workstation-diff-error-message'), 'Workstation phải có #workstation-diff-error-message');
+      assert.ok(workstationContent.includes("previewDiffStatus === 'error'"), 'Workstation phải xử lý previewDiffStatus error');
+    });
+
+    await runAsyncTest('16.11 Workstation.js khởi tạo #btn-view-diff disabled và chỉ enable khi đã scan và chọn tệp', async () => {
+      const workstationContent = await fs.promises.readFile(path.join(ROOT_DIR, 'assets', 'js', 'views', 'workstation.js'), 'utf8');
+      assert.ok(workstationContent.includes('<button id="btn-view-diff" type="button" disabled'), 'Template phải có disabled trên #btn-view-diff');
+      assert.ok(workstationContent.includes("state.scanStatus === 'scanned' && selectedDiffsCount > 0"), 'Logic enable phải yêu cầu scanned và selectedDiffsCount > 0');
+      assert.ok(workstationContent.includes('if (btnViewDiff.disabled) return;'), 'Click handler phải chặn khi disabled');
+    });
+  } finally {
+    await fs.promises.rm(tmpBatchPreviewRoot, { recursive: true, force: true }).catch(() => {});
+  }
 
   // -------------------------------------------------------------
   // SUMMARY REPORT

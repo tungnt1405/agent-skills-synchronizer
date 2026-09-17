@@ -431,6 +431,11 @@ export function initApp() {
     appStore.loadSourceOptions();
   }
 
+  // Load available AI agent options if available
+  if (typeof appStore.loadAgentOptions === 'function') {
+    appStore.loadAgentOptions();
+  }
+
   // 4. Synchronize views with store activeView state without destroying DOM
   function syncViews(state) {
     // Update Topbar Executor Status on every state update
@@ -481,8 +486,26 @@ export function initApp() {
     }
   });
 
-  // Event: 'skillsync:view-diff' from Workstation footer
-  document.addEventListener('skillsync:view-diff', () => {
+  // Event: 'skillsync:view-diff' from Workstation footer or table row
+  document.addEventListener('skillsync:view-diff', async (event) => {
+    const detail = event.detail || {};
+    if (detail.mode === 'preview' || (detail.path && detail.mode !== 'review') || (Array.isArray(detail.paths) && detail.paths.length > 0)) {
+      const paths = Array.isArray(detail.paths) && detail.paths.length > 0
+        ? detail.paths
+        : (detail.path ? [detail.path] : []);
+
+      if (paths.length === 0) {
+        appStore.setActiveView('diff-inspector');
+        return;
+      }
+
+      if (paths.length > 1 && typeof appStore.openPreviewDiffBatch === 'function') {
+        await appStore.openPreviewDiffBatch(paths, { line: detail.line ?? null });
+      } else if (typeof appStore.openPreviewDiff === 'function') {
+        await appStore.openPreviewDiff(detail.path || paths[0] || '', { line: detail.line ?? null });
+      }
+      return;
+    }
     appStore.setActiveView('diff-inspector');
   });
 
@@ -517,7 +540,12 @@ export function initApp() {
     // Keep Workstation visible while running - do NOT immediately switch to diff-inspector
     appStore.setActiveView('workstation');
 
-    const result = await appStore.executePendingBatch();
+    let result = null;
+    try {
+      result = await appStore.executePendingBatch();
+    } catch {
+      result = null;
+    }
     const isSuccess = Boolean(result && (result.success === true || (result.success !== false && result.syncSessionId)));
 
     if (isSuccess) {
@@ -602,7 +630,12 @@ export function initApp() {
     }
 
     appStore.setActiveView('workstation');
-    const result = await appStore.executePendingBatch();
+    let result = null;
+    try {
+      result = await appStore.executePendingBatch();
+    } catch {
+      result = null;
+    }
     const isSuccess = Boolean(result && (result.success === true || (result.success !== false && result.syncSessionId)));
 
     if (isSuccess) {

@@ -104,6 +104,13 @@ Sau khi Confirmation Modal được xác nhận, ứng dụng khởi động ti�
   5. **5. Atomic write (`write`)**: Thực hiện ghi nội dung mới hoặc đã hợp nhất vào hệ thống tệp Target bằng cơ chế nguyên tử (atomic write qua file tạm thời + atomic rename) nhằm chống lỗi dữ liệu nửa chừng khi mất nguồn hoặc crash.
   6. **6. Ready for review (`ready-for-review`)**: Sau khi bước ghi hoàn tất thành công, phiên chuyển sang trạng thái `ReadyForReview` / `ready-for-review`, cập nhật danh sách `diffFiles` sẵn sàng cho Diff Inspector kiểm duyệt.
 
+- **Khám phá AI Agent, Ánh xạ Provider, Model & Thực thi Sandbox**:
+  - **Khám phá CLI qua local server**: Workstation tự động khám phá các công cụ CLI được hỗ trợ đã cài đặt trên hệ thống thông qua local server (`GET /api/agents`).
+  - **Ánh xạ Provider & chọn Model**: Lựa chọn Agent sẽ tự động thay đổi Provider tương ứng; Model chỉ có thể lựa chọn khi được liệt kê danh sách cụ thể (`modelSelection = 'available'`).
+  - **Model mặc định khi không liệt kê**: Khi tính năng khám phá Model không khả dụng (`modelSelection = 'agent-default'`), CLI sẽ sử dụng Model mặc định của nó.
+  - **Bắt buộc thực thi trong Sandbox**: Prompt hợp nhất bắt buộc phải chạy trong môi trường cô lập (sandbox) bất cứ khi nào môi trường cung cấp sandbox; nếu thiết lập sandbox thất bại, tiến trình đồng bộ dừng lại thay vì chuyển sang chạy trực tiếp trên host (host execution).
+  - **Bảo mật giao diện người dùng**: Giao diện người dùng (UI) không bao giờ tiếp nhận API key, đường dẫn nhị phân (binary path), hay các cờ dòng lệnh tự do (free-form command flags).
+
 - **Nguyên tắc Phân định Trách nhiệm & Quyền sở hữu (Ownership of Execution Truth)**:
   - **Module 03 / Server là Single Source of Truth**: Toàn bộ logic pre-flight provider check, tạo bản sao lưu backup, ghi filesystem nguyên tử, xử lý sự cố và tự động rollback thuộc quyền sở hữu độc quyền của Module 03 (`tools/sync-executor.js` và `tools/ai-merge-engine.js`).
   - **Trình duyệt chỉ hiển thị trạng thái (Browser as Pure State Renderer)**: Client SPA trong trình duyệt không tự ý giả định kết quả hay can thiệp filesystem; UI chỉ đóng vai trò render trạng thái thực thi trả về từ server (`ready-for-review`, `execution-failed`, hoặc `rolled-back`).
@@ -136,6 +143,8 @@ Sau khi quá trình AI sync ghi file hoàn tất và chuyển trạng thái sang
 - **Toàn lô duy nhất (BR-007)**: Quyết định Approve hoặc Reject áp dụng cho toàn bộ lô thay đổi, không phê duyệt/từ chối từng tệp riêng lẻ.
 - **Approve & Merge (BR-008)**: Chỉ khả dụng khi không còn khối xung đột chưa phân giải ("All checks passed"). Khi hoàn tất, backup mô phỏng được xóa (`backupDeleted = true`), các tệp trong cây thư mục chuyển sang trạng thái "Đã đồng bộ", và Success Modal hiển thị mã phiên (`syncSessionId`), số tệp hợp nhất, cùng số dòng `+thêm / -xóa`.
 - **Reject/Abort Rollback (BR-009)**: Khôi phục 100% bản Target trước đồng bộ cho các tệp đã sửa đổi và loại bỏ các tệp mới tạo mô phỏng khỏi Target, sau đó đưa ứng dụng về màn hình Workstation ở trạng thái `idle`.
+
+Ngoài luồng review sau sync, Module 04 hỗ trợ **preview diff trước sync**: khi người dùng bấm "Xem chi tiết diff" trên một file chênh lệch trong Workstation, ứng dụng gọi endpoint read-only `/api/diff/preview` để đọc Target/Reference trong `sources/`, render side-by-side trong Diff Inspector với badge "Preview trước sync", và ẩn toàn bộ hành động Approve/Reject vì chưa có batch đã ghi Target.
 
 ---
 
@@ -234,9 +243,9 @@ node --test tests/ui-smoke.test.js
 node --check tests/ui-smoke.test.js
 ```
 
-### Kết quả kiểm tra bao gồm 10 nhóm bài test toàn diện:
+### Kết quả kiểm tra bao gồm 15 nhóm bài test toàn diện (138 bài test, 100% PASS):
 - [x] **Nhóm 1: Tệp tin & Assets**: Đảm bảo tất cả 9 file mã nguồn cốt lõi (bao gồm `tools/skillsync-server.js` và `assets/js/source-api.js`) tồn tại và có kích thước hợp lệ (> 0 bytes).
-- [x] **Nhóm 2: Cú pháp JavaScript**: Kiểm tra cú pháp của toàn bộ 7 file JavaScript/ES Module thông qua `node --check`.
+- [x] **Nhóm 2: Cú pháp JavaScript**: Kiểm tra cú pháp của toàn bộ các file JavaScript/ES Module thông qua `node --check`.
 - [x] **Nhóm 3: Cấu trúc DOM**: Đảm bảo 3 Container chính, 4 Hộp thoại Modal (kèm 7 trường dữ liệu Confirmation Modal) và 12 phần tử tương tác cốt lõi tồn tại đầy đủ.
 - [x] **Nhóm 4: State Store Unit**: Kiểm thử reactive store: khởi tạo state chuẩn, đảo chiều nguồn `swapSources`, lọc file `setFilter`, quản lý diff `selectDiffFile`, giải quyết xung đột `resolveConflict` kèm chống re-notification, mô phỏng `applyMerge`, và phân loại/quản lý pending batch (Module 02).
 - [x] **Nhóm 5: Modal Manager**: Đảm bảo module `modal.js` export chuẩn xác `openModal`, `closeModal`, `getActiveModalId`.
@@ -244,7 +253,12 @@ node --check tests/ui-smoke.test.js
 - [x] **Nhóm 7: Source Discovery & Scan API**: Kiểm thử filesystem API (`listSourceProjects` lọc folder cấp 1, `scanSources` phân loại tệp `synced`, `outdated`, `reference-only` theo mã băm SHA-256) và Store selection (chọn folder đệ quy, trạng thái checkbox `indeterminate`).
 - [x] **Nhóm 8: AI Sync Execution & Transactional Filesystem**: Kiểm thử Module 03 (local AI engine metadata & standard prompt, pre-flight check CLI AI Agent `checkAgentInstalled`, transactional batch execution với byte-for-byte backup & atomic write, chặn missing agent HTTP 422, chặn path traversal `normalizeRelativePath`, và Store `executePendingBatch` mapping sang `diffFiles`).
 - [x] **Nhóm 9: BA Spec Module 04**: Kiểm tra AC-004/AC-005/AC-006 cho Diff Inspector before/after rows, Approve & Merge xoá backup mô phỏng kèm thống kê, và Reject/Abort rollback toàn lô.
-- [x] **Nhóm 10: Workstation & AI Engine Executor Regression Suite (Phase 4)**: Kiểm thử hồi quy toàn diện các thành phần Workstation shell (`workstation-header`, `workspace-source-grid`, `workspace-target-card`, `workspace-reference-card`, `workspace-swap-button`, `workstation-scan-toolbar`, `workspace-target-tree`, `workspace-reference-tree`, `workstation-summary`), 5 filter chips, Executor topbar indicators (`executor-status`, `executor-status-badge`, `executor-status-label`, `executor-status-progress`, `aria-live="polite"`), Executor panel (6 bước, retry, reset, open diff), Request mapping (`DEFAULT_AI_ENGINE`, `DEFAULT_EXECUTION_OPTIONS`), và State mapping (thành công chuyển `ready-for-review` & populate `diffFiles`; thất bại chuyển `execution-failed` hoặc `rolled-back` và purge sạch review data).
+- [x] **Nhóm 10: Workstation & AI Engine Executor Regression Suite**: Kiểm thử hồi quy toàn diện các thành phần Workstation shell (`workstation-header`, `workspace-source-grid`, `workspace-target-card`, `workspace-reference-card`, `workspace-swap-button`, `workstation-scan-toolbar`, `workspace-target-tree`, `workspace-reference-tree`, `workstation-summary`), 5 filter chips, Executor topbar indicators (`executor-status`, `executor-status-badge`, `executor-status-label`, `executor-status-progress`, `aria-live="polite"`), Executor panel (6 bước, retry, reset, open diff), Request mapping (`DEFAULT_AI_ENGINE`, `DEFAULT_EXECUTION_OPTIONS`), và State mapping (thành công chuyển `ready-for-review` & populate `diffFiles`; thất bại chuyển `execution-failed` hoặc `rolled-back` và purge sạch review data).
+- [x] **Nhóm 11: Agent Adapters, Discovery & Sandbox Execution (Phase 1)**: Kiểm thử Adapter Catalog máy chủ (`agy`, `claude`, `copilot`, `codex`), cơ chế ánh xạ Provider tự động, phát hiện và kiểm tra tính sẵn sàng của CLI (`discoverAgentCapabilities`), quy tắc chọn Model (`available` vs `agent-default`), thiết lập và thực thi sandbox cô lập (`bwrap`, `docker`, `podman`, `sandbox-exec`) không cho phép fallback host khi sandbox lỗi.
+- [x] **Nhóm 12: Read-only Difference Preview API**: Kiểm thử endpoint `/api/diff/preview` trước đồng bộ, đối chiếu side-by-side Target vs Reference, ngăn chặn path traversal.
+- [x] **Nhóm 13: Server API, Transactional Execution & Log Redaction (Phase 2)**: Kiểm thử endpoint `GET /api/agents` (chỉ chấp nhận GET/HEAD, từ chối method khác với 405), kiểm tra preflight validation trước khi tạo backup, hợp nhất thông qua adapter được chọn, phục hồi backup nguyên tử, và làm sạch nhật ký lỗi công khai (`sanitizePublicLog`).
+- [x] **Nhóm 14: Browser Agent & Model Controls (Phase 3)**: Kiểm thử API client discovery (`fetchAvailableAgents`), đồng bộ và lưu trữ lựa chọn Agent/Model vào `localStorage`, tự động suy luận Provider trên giao diện, và giao diện điều khiển chuẩn WCAG tiếp cận.
+- [x] **Nhóm 15: Configurable AI Engine End-to-End Regressions (Phase 4)**: Kiểm thử hồi quy nghiêm ngặt toàn bộ các kịch bản biên: từ chối Provider giả mạo trước backup, chặn thực thi khi không có Agent, loại bỏ cấu hình Model hết hạn, xử lý an toàn lỗi sandbox, giới hạn đầu ra 5MB và phục hồi Target byte-for-byte khi adapter gặp lỗi.
 
 ---
 
