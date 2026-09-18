@@ -144,7 +144,7 @@ function buildTargetReferenceSyncPrompt(pairs = []) {
     '',
     'QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ:',
     'A. Kế thừa Cấu trúc Mở rộng: Nếu Reference có các nội dung boilerplate, HTML comment hướng dẫn (VD: <!-- BEFORE FILING: ... -->), hoặc cấu trúc chặt chẽ hơn (VD: `## What happened?` thay vì `what?`), Target phải kế thừa và bổ sung các thành phần này đúng vị trí.',
-    'B. Bảo toàn Định danh Dự án: Các định danh dự án, tên riêng của Target (VD: TargetProject) TUYỆT ĐỐI KHÔNG ĐƯỢC thay thế bằng tên của Reference (VD: ReferenceProject). Nếu cấu trúc Reference có nhắc đến tên dự án của Reference, khi mang sang Target phải đổi thành tên dự án của Target.',
+    'B. Bảo toàn Định danh Dự án: Các định danh dự án, tên riêng của Target (VD: TargetProject) TUYỆT ĐỐI KHÔNG ĐƯỢC thay thế bằng tên của Reference (VD: ReferenceProject). Đặc biệt siết chặt: nếu trong nội dung, ví dụ hoặc đường dẫn của Reference có chứa tên riêng của nó (VD: .superpowers, superpowers), khi mang sang Target BẮT BUỘC phải đổi thành tên riêng của Target đang dùng (VD: .tais, .tungnt-ai-skills, tungnt-ai-skills... tùy theo context Target). KHÔNG ĐƯỢC giữ nguyên tên riêng của Reference gán cho Target.',
     'C. Phạm vi So sánh Khép kín (Strict 2-File Scope): CHỈ SO SÁNH TRỰC TIẾP GIỮA 2 FILE (Target và Reference). TUYỆT ĐỐI KHÔNG ĐƯỢC THÊM bất kỳ nội dung, ghi chú, giải thích, checklist hoặc trường dữ liệu nào nằm ngoài phạm vi có sẵn trong 2 file.',
     '',
     'Quy tắc cấm tuyệt đối:',
