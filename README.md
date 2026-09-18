@@ -32,16 +32,16 @@ SkillSyncPro được phát triển theo triết lý **Zero-Build Native SPA**:
 
 ## 2. 6 Màn hình Giao diện Tham chiếu
 
-Ứng dụng tái hiện trực quan, nhất quán về bố cục, thẩm mỹ và luồng tương tác từ 6 màn hình giao diện chuẩn được thiết kế trên [Google Stitch Project 15365872207815192566](https://stitch.withgoogle.com/projects/15365872207815192566):
+Ứng dụng tái hiện trực quan, nhất quán về bố cục, thẩm mỹ và luồng tương tác từ 6 màn hình giao diện chuẩn trong hệ thống thiết kế SkillSyncPro UI/UX:
 
-| STT | Tên màn hình | Mã giao diện Stitch | Vai trò & Tính năng chính |
+| STT | Tên màn hình | Mã định danh màn hình | Vai trò & Tính năng chính |
 | :---: | :--- | :--- | :--- |
-| **1** | **Comparator Workstation** *(Màn hình chính)* | [c9bfe09d58a94db08b88addfc503db98](https://stitch.withgoogle.com/projects/15365872207815192566/screens/c9bfe09d58a94db08b88addfc503db98) *(Target)*<br>[5cba1b214d154cfb96bf75df0cc6336f](https://stitch.withgoogle.com/projects/15365872207815192566/screens/5cba1b214d154cfb96bf75df0cc6336f) *(Responsive Reference)* | Không gian làm việc so sánh song song hai kho lưu trữ: Bộ chọn Target/Reference đối xứng, nút Swap 180° đảo chiều nguồn, Banner quét FS với đối chiếu SHA-256, Cây thư mục đối ứng phân loại tệp tin, Topbar Executor status và Footer thống kê. |
-| **2** | **Confirmation Modal** | [5a5da8df81a94de7bb42c123ca0de706](https://stitch.withgoogle.com/projects/15365872207815192566/screens/5a5da8df81a94de7bb42c123ca0de706) | Hộp thoại xác nhận trước khi chuyển sang chế độ Merge: Tóm tắt nguồn Target & Reference, cảnh báo số tệp chênh lệch, đếm số file trùng/mới và lưu draft state trước khi AI execution tiếp quản. |
-| **3** | **Diff Review & Approve/Reject Inspector** | [ec6652a96a724d7687ad73c83edca72a](https://stitch.withgoogle.com/projects/15365872207815192566/screens/ec6652a96a724d7687ad73c83edca72a) | Trình duyệt Diff song song trước/sau cho toàn bộ lô AI-modified files: danh sách file thay đổi bên trái, code diff hai cột bên phải, trạng thái tổng quát "All checks passed", nút **Approve & Merge** để giữ thay đổi và xoá backup, nút **Reject/Abort** để rollback toàn lô. |
-| **4** | **Merge Success Modal** | [3d32bcf84f3841618e6487bc0da371f4](https://stitch.withgoogle.com/projects/15365872207815192566/screens/3d32bcf84f3841618e6487bc0da371f4) | Thông báo hợp nhất thành công với hiệu ứng màu ngọc bích: Hiển thị Mã phiên đồng bộ (`syncSessionId`), số tệp cập nhật, thống kê dòng thêm/xóa (+x/-y), xác nhận đã xóa backup của lô và nút quay lại Workstation. |
-| **5** | **Merge Failure Modal** | [81678445237f416fa42038706e1e8e11](https://stitch.withgoogle.com/projects/15365872207815192566/screens/81678445237f416fa42038706e1e8e11) | Hộp thoại cảnh báo sự cố kỹ thuật: Hiển thị Terminal mô phỏng log lỗi, bước lỗi (`failedStep`), mã lỗi (`errorCode`), nút Khôi phục Rollback và nút Thử lại tác vụ. |
-| **6** | **Merge Conflict Warning Modal** | [1aacdf2a039a415383c6c0803a6b917a](https://stitch.withgoogle.com/projects/15365872207815192566/screens/1aacdf2a039a415383c6c0803a6b917a) | Cảnh báo phân kỳ nhánh nghiêm trọng khi bấm Đồng bộ ngay mà vẫn còn khối xung đột chưa xử lý: Liệt kê danh sách các tệp đang vướng conflict kèm nút mở trực tiếp Diff Inspector để giải quyết. |
+| **1** | **Comparator Workstation** *(Màn hình chính)* | `SCREEN-01` *(Target & Responsive Reference)* | Không gian làm việc so sánh song song hai kho lưu trữ: Bộ chọn Target/Reference đối xứng, nút Swap 180° đảo chiều nguồn, Banner quét FS với đối chiếu SHA-256, Cây thư mục đối ứng phân loại tệp tin, Topbar Executor status và Footer thống kê. |
+| **2** | **Confirmation Modal** | `SCREEN-02` | Hộp thoại xác nhận trước khi chuyển sang chế độ Merge: Tóm tắt nguồn Target & Reference, cảnh báo số tệp chênh lệch, đếm số file trùng/mới và lưu draft state trước khi AI execution tiếp quản. |
+| **3** | **Diff Review & Approve/Reject Inspector** | `SCREEN-03` | Trình duyệt Diff song song trước/sau cho toàn bộ lô AI-modified files: danh sách file thay đổi bên trái, code diff hai cột bên phải, trạng thái tổng quát "All checks passed", nút **Approve & Merge** để giữ thay đổi và xoá backup, nút **Reject/Abort** để rollback toàn lô. |
+| **4** | **Merge Success Modal** | `SCREEN-04` | Thông báo hợp nhất thành công với hiệu ứng màu ngọc bích: Hiển thị Mã phiên đồng bộ (`syncSessionId`), số tệp cập nhật, thống kê dòng thêm/xóa (+x/-y), xác nhận đã xóa backup của lô và nút quay lại Workstation. |
+| **5** | **Merge Failure Modal** | `SCREEN-05` | Hộp thoại cảnh báo sự cố kỹ thuật: Hiển thị Terminal mô phỏng log lỗi, bước lỗi (`failedStep`), mã lỗi (`errorCode`), nút Khôi phục Rollback và nút Thử lại tác vụ. |
+| **6** | **Merge Conflict Warning Modal** | `SCREEN-06` | Cảnh báo phân kỳ nhánh nghiêm trọng khi bấm Đồng bộ ngay mà vẫn còn khối xung đột chưa xử lý: Liệt kê danh sách các tệp đang vướng conflict kèm nút mở trực tiếp Diff Inspector để giải quyết. |
 
 ---
 
