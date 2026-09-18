@@ -21,7 +21,7 @@ const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 const { executeSyncBatch, checkAgentInstalled, buildDiffRows, normalizeRelativePath } = require('../tools/sync-executor.js');
 const { mergeMatchingFile, createNewFile, buildTargetReferenceSyncPrompt } = require('../tools/ai-merge-engine.js');
-const { AGENT_CATALOG, discoverAgentCapabilities, validateAiEngineSelection, runAgentMerge, resolveEnvironmentSandbox, MAX_AGENT_OUTPUT_BYTES } = require('../tools/agent-adapters.js');
+const { AGENT_CATALOG, discoverAgentCapabilities, validateAiEngineSelection, runAgentMerge, resolveEnvironmentSandbox, MAX_AGENT_OUTPUT_BYTES, defaultRunProcess, ROOT_DIR: ADAPTER_ROOT_DIR } = require('../tools/agent-adapters.js');
 const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog } = require('../tools/skillsync-server.js');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -1197,6 +1197,9 @@ async function main() {
       { targetPath: 'skills/test.md', referencePath: 'skills/test.md' }
     ]);
 
+    assert.ok(prompt.includes('<CRITICAL_DIRECTIVE>'), 'buildTargetReferenceSyncPrompt phải chứa thẻ <CRITICAL_DIRECTIVE>');
+    assert.ok(prompt.includes('PURE IN-MEMORY TEXT MERGE'), 'buildTargetReferenceSyncPrompt phải tuyên bố chế độ PURE IN-MEMORY TEXT MERGE');
+
     if (typeof prompt !== 'string' || !prompt.includes('target-reference-file-sync')) {
       throw new Error('buildTargetReferenceSyncPrompt không sinh ra prompt chứa target-reference-file-sync');
     }
@@ -1927,6 +1930,21 @@ async function main() {
     // Verify response return
     assert.strictEqual(result.syncSessionId, 'sess-phase4-req-map');
     assert.strictEqual(result.success, true);
+
+    // Verify executionOptions forwarding
+    let optCapturedPayload = null;
+    const optFakeFetch = async (url, opts) => {
+      optCapturedPayload = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({ ok: true, sessionId: 's1', changedFiles: [] })
+      };
+    };
+    await sourceApi.executeSyncBatch({
+      executionOptions: { timeoutMs: 240000 }
+    }, optFakeFetch);
+    assert.strictEqual(optCapturedPayload?.executionOptions?.timeoutMs, 240000, 'executeSyncBatch phải chuyển tiếp executionOptions.timeoutMs');
+    assert.strictEqual(optCapturedPayload?.executionOptions?.disableSlashCommands, true, 'executeSyncBatch phải có disableSlashCommands mặc định là true');
   });
 
   await runAsyncTest('10.4 State mapping: success populates diffFiles và executorState=ready-for-review; failure map sang execution-failed/rolled-back và purge stale data', async () => {
@@ -2046,6 +2064,10 @@ async function main() {
     // 1. Unknown agent không tồn tại trong AGENT_CATALOG
     assert.strictEqual(AGENT_CATALOG['unknown-agent'], undefined, 'Unknown agent không được tồn tại trong AGENT_CATALOG');
     assert.strictEqual(AGENT_CATALOG['evil-cmd-injection'], undefined, 'Malicious agent ID không được tồn tại trong AGENT_CATALOG');
+
+    const agyArgs = AGENT_CATALOG.agy.buildMergeArgs();
+    assert.ok(agyArgs.includes('--disable-slash-commands'), 'agy buildMergeArgs phải chứa cờ --disable-slash-commands');
+    assert.ok(agyArgs.includes('--dangerously-skip-permissions'), 'agy buildMergeArgs phải chứa --dangerously-skip-permissions');
 
     // 2. validateAiEngineSelection từ chối unknown agent
     const dummyCapabilities = {
@@ -3131,6 +3153,59 @@ async function main() {
         false,
         'Không được ghi sess138omitted vào production log khi logFile bị bỏ qua trong test env'
       );
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('13.9 executeSyncBatch resolves timeout and passes timeout and cwd to runAgentMerge', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-9');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession139';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const targetPath = path.join(sourcesDir, 'target', 'skills', 'test.md');
+      const referencePath = path.join(sourcesDir, 'reference', 'skills', 'test.md');
+      await fs.promises.writeFile(targetPath, '# Target 13.9\n', 'utf8');
+      await fs.promises.writeFile(referencePath, '# Reference 13.9\n', 'utf8');
+
+      let passedTimeout = null;
+      let passedCwd = null;
+      const fakeMerge = async (opts) => {
+        passedTimeout = opts.timeout;
+        passedCwd = opts.cwd;
+        return {
+          ok: true,
+          content: 'merged',
+          engineName: opts.agent || 'agy',
+          analysisSummary: 'Merged',
+          conflictPoints: []
+        };
+      };
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [{ path: 'skills/test.md' }],
+        executionOptions: { timeoutMs: 240000 }
+      };
+
+      await executeSyncBatch(batch, {
+        sourcesDir,
+        backupRoot,
+        skipAgentCheck: true,
+        runAgentMerge: fakeMerge
+      });
+
+      const expectedCwd = path.join(sourcesDir, 'target');
+      assert.strictEqual(passedTimeout, 240000, `passedTimeout phải là 240000, nhận: ${passedTimeout}`);
+      assert.strictEqual(passedCwd, expectedCwd, `passedCwd phải là ${expectedCwd}, nhận: ${passedCwd}`);
     } finally {
       await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -4368,6 +4443,221 @@ async function main() {
   } finally {
     await fs.promises.rm(tmpBatchPreviewRoot, { recursive: true, force: true }).catch(() => {});
   }
+
+  // -------------------------------------------------------------
+  // GROUP 17: Sync Execution Timeout & Defensive Directives (Fix ERR_AI_TIMEOUT)
+  // -------------------------------------------------------------
+  startGroup('Nhóm 17: Sync Execution Timeout & Defensive Directives (Fix ERR_AI_TIMEOUT)');
+
+  runTest('17.1 buildTargetReferenceSyncPrompt chứa <CRITICAL_DIRECTIVE> và cấm tool calls', () => {
+    const prompt = buildTargetReferenceSyncPrompt([
+      { targetPath: 'skills/sample.md', referencePath: 'skills/sample.md' }
+    ]);
+    assert.ok(prompt.includes('<CRITICAL_DIRECTIVE>'), 'Prompt phải có thẻ mở <CRITICAL_DIRECTIVE>');
+    assert.ok(prompt.includes('</CRITICAL_DIRECTIVE>'), 'Prompt phải có thẻ đóng </CRITICAL_DIRECTIVE>');
+    assert.ok(prompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt phải ghi rõ PURE IN-MEMORY TEXT MERGE');
+    assert.ok(prompt.includes('TUYỆT ĐỐI KHÔNG GỌI TOOL'), 'Prompt phải có chỉ thị cấm tuyệt đối gọi tool');
+    assert.ok(prompt.includes('KHÔNG ĐỌC THÊM BẤT KỲ FILE NÀO KHÁC'), 'Prompt phải cấm đọc thêm file');
+
+    // Kiểm tra thêm trường hợp danh sách rỗng vẫn bảo tồn directive
+    const emptyPairsPrompt = buildTargetReferenceSyncPrompt([]);
+    assert.ok(emptyPairsPrompt.includes('<CRITICAL_DIRECTIVE>'), 'Prompt rỗng vẫn phải có <CRITICAL_DIRECTIVE>');
+    assert.ok(emptyPairsPrompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt rỗng vẫn phải có PURE IN-MEMORY TEXT MERGE');
+  });
+
+  runTest('17.2 AGENT_CATALOG.agy.buildMergeArgs chứa cờ --disable-slash-commands', () => {
+    assert.ok(AGENT_CATALOG.agy, 'AGENT_CATALOG phải chứa agy');
+    assert.strictEqual(typeof AGENT_CATALOG.agy.buildMergeArgs, 'function', 'buildMergeArgs phải là function');
+
+    // Default arguments
+    const defaultArgs = AGENT_CATALOG.agy.buildMergeArgs();
+    assert.ok(defaultArgs.includes('--disable-slash-commands'), 'Mặc định buildMergeArgs phải có --disable-slash-commands');
+    assert.ok(defaultArgs.includes('--dangerously-skip-permissions'), 'buildMergeArgs phải có --dangerously-skip-permissions');
+
+    // When disableSlashCommands is explicitly false
+    const withoutSlashDisabled = AGENT_CATALOG.agy.buildMergeArgs({ disableSlashCommands: false });
+    assert.ok(!withoutSlashDisabled.includes('--disable-slash-commands'), 'Khi disableSlashCommands: false, args không được có --disable-slash-commands');
+    assert.ok(withoutSlashDisabled.includes('--dangerously-skip-permissions'), 'Vẫn phải có --dangerously-skip-permissions');
+
+    // Model argument handling
+    const withModelArgs = AGENT_CATALOG.agy.buildMergeArgs({ model: 'gemini-2.5-pro' });
+    assert.ok(withModelArgs.includes('--model'), 'Phải chứa cờ --model');
+    const modelIndex = withModelArgs.indexOf('--model');
+    assert.strictEqual(withModelArgs[modelIndex + 1], 'gemini-2.5-pro', 'Giá trị model phải đi liền sau cờ --model');
+    assert.ok(withModelArgs.includes('--disable-slash-commands'), 'Vẫn phải có cờ --disable-slash-commands khi truyền model');
+  });
+
+  await runAsyncTest('17.3 defaultRunProcess khóa cwd mặc định vào ROOT_DIR', async () => {
+    assert.ok(ADAPTER_ROOT_DIR, 'ROOT_DIR phải được export từ tools/agent-adapters.js');
+    assert.strictEqual(typeof ADAPTER_ROOT_DIR, 'string', 'ADAPTER_ROOT_DIR phải là chuỗi đường dẫn');
+    assert.ok(fs.existsSync(ADAPTER_ROOT_DIR), 'ADAPTER_ROOT_DIR phải tồn tại');
+    assert.ok(fs.statSync(ADAPTER_ROOT_DIR).isDirectory(), 'ADAPTER_ROOT_DIR phải là một thư mục');
+
+    // Chạy tiến trình node không chỉ định cwd -> phải rơi về ROOT_DIR
+    const resDefault = await defaultRunProcess(process.execPath, ['-e', 'console.log(process.cwd())']);
+    assert.strictEqual(resDefault.exitCode, 0, 'Tiến trình mặc định phải thoát thành công');
+    assert.strictEqual(
+      path.resolve(resDefault.stdout.trim()),
+      path.resolve(ADAPTER_ROOT_DIR),
+      'cwd mặc định của defaultRunProcess phải khớp với ROOT_DIR'
+    );
+
+    // Chạy tiến trình với custom cwd -> phải tôn trọng cwd được cung cấp
+    const customCwd = path.resolve(__dirname);
+    const resCustom = await defaultRunProcess(process.execPath, ['-e', 'console.log(process.cwd())'], { cwd: customCwd });
+    assert.strictEqual(resCustom.exitCode, 0);
+    assert.strictEqual(
+      path.resolve(resCustom.stdout.trim()),
+      customCwd,
+      'defaultRunProcess phải tôn trọng cwd tùy chỉnh khi được truyền vào'
+    );
+  });
+
+  await runAsyncTest('17.4 executeSyncBatch nạp timeout linh hoạt từ executionOptions và setting.json', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-17-4');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target-timeout-test'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'ref-timeout-test'), { recursive: true });
+      await fs.promises.writeFile(path.join(sourcesDir, 'target-timeout-test', 'file.txt'), 'old-content\n', 'utf8');
+      await fs.promises.writeFile(path.join(sourcesDir, 'ref-timeout-test', 'file.txt'), 'new-content\n', 'utf8');
+
+      let capturedTimeout = null;
+      const fakeAgentMerger = async (opts) => {
+        capturedTimeout = opts.timeout;
+        return {
+          ok: true,
+          content: 'merged-content\n',
+          engineName: 'mock',
+          analysisSummary: 'Mock merge',
+          conflictPoints: []
+        };
+      };
+
+      const mockCapabilities = async () => ({
+        agents: [
+          { id: 'agy', installed: true, provider: { id: 'agy', label: 'AGY' }, models: [] }
+        ]
+      });
+
+      const baseOptions = {
+        sourcesDir,
+        backupRoot,
+        skipAgentCheck: true,
+        runAgentMerge: fakeAgentMerger,
+        discoverAgentCapabilities: mockCapabilities
+      };
+
+      // Case 1: executionOptions.timeoutMs được ưu tiên cao nhất
+      await executeSyncBatch({
+        targetSource: 'target-timeout-test',
+        referenceSource: 'ref-timeout-test',
+        matchingFiles: ['file.txt'],
+        executionOptions: { timeoutMs: 250000 },
+        options: { timeoutMs: 120000 }
+      }, { ...baseOptions, timeout: 90000 });
+      assert.strictEqual(capturedTimeout, 250000, 'batch.executionOptions.timeoutMs phải được ưu tiên cao nhất');
+
+      // Case 2: Fallback sang batch.options.timeoutMs nếu không có executionOptions.timeoutMs
+      await executeSyncBatch({
+        targetSource: 'target-timeout-test',
+        referenceSource: 'ref-timeout-test',
+        matchingFiles: ['file.txt'],
+        options: { timeoutMs: 150000 }
+      }, { ...baseOptions, timeout: 90000 });
+      assert.strictEqual(capturedTimeout, 150000, 'Fallback sang batch.options.timeoutMs khi không có executionOptions');
+
+      // Case 3: Fallback sang options.timeout nếu batch không truyền timeout
+      await executeSyncBatch({
+        targetSource: 'target-timeout-test',
+        referenceSource: 'ref-timeout-test',
+        matchingFiles: ['file.txt']
+      }, { ...baseOptions, timeout: 75000 });
+      assert.strictEqual(capturedTimeout, 75000, 'Fallback sang options.timeout khi batch không có timeout');
+
+      // Case 4: Fallback mặc định 180000 ms (3 phút) khi không có cấu hình timeout nào
+      await executeSyncBatch({
+        targetSource: 'target-timeout-test',
+        referenceSource: 'ref-timeout-test',
+        matchingFiles: ['file.txt']
+      }, baseOptions);
+      assert.strictEqual(capturedTimeout, 180000, 'Fallback về mặc định 180000 ms khi không cấu hình timeout');
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('17.5 source-api.executeSyncBatch đóng gói executionOptions mặc định timeoutMs 180000', async () => {
+    const sourceApi = await import(`../assets/js/source-api.js?smoke-17-5=${Date.now()}`);
+
+    // Verify DEFAULT_AI_EXECUTION_OPTIONS constant
+    assert.ok(sourceApi.DEFAULT_AI_EXECUTION_OPTIONS, 'source-api.js phải export DEFAULT_AI_EXECUTION_OPTIONS');
+    assert.strictEqual(sourceApi.DEFAULT_AI_EXECUTION_OPTIONS.timeoutMs, 180000, 'DEFAULT_AI_EXECUTION_OPTIONS.timeoutMs phải là 180000');
+    assert.strictEqual(sourceApi.DEFAULT_AI_EXECUTION_OPTIONS.disableSlashCommands, true, 'DEFAULT_AI_EXECUTION_OPTIONS.disableSlashCommands phải là true');
+
+    // Case 1: Mặc định đóng gói executionOptions { timeoutMs: 180000, disableSlashCommands: true }
+    let capturedPayloadDefault = null;
+    const fakeFetchDefault = async (url, opts) => {
+      capturedPayloadDefault = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({ ok: true, syncSessionId: 'sess-17-5-default' })
+      };
+    };
+
+    await sourceApi.executeSyncBatch({
+      targetSource: 'project-target',
+      referenceSource: 'project-ref',
+      matchingFiles: ['test.txt']
+    }, fakeFetchDefault);
+
+    assert.ok(capturedPayloadDefault, 'Payload phải được gửi');
+    assert.strictEqual(
+      capturedPayloadDefault.executionOptions?.timeoutMs,
+      180000,
+      'executionOptions.timeoutMs mặc định phải là 180000'
+    );
+    assert.strictEqual(
+      capturedPayloadDefault.executionOptions?.disableSlashCommands,
+      true,
+      'executionOptions.disableSlashCommands mặc định phải là true'
+    );
+
+    // Case 2: Hợp nhất override options đúng cách
+    let capturedPayloadOverride = null;
+    const fakeFetchOverride = async (url, opts) => {
+      capturedPayloadOverride = JSON.parse(opts.body);
+      return {
+        ok: true,
+        json: async () => ({ ok: true, syncSessionId: 'sess-17-5-override' })
+      };
+    };
+
+    await sourceApi.executeSyncBatch({
+      targetSource: 'project-target',
+      referenceSource: 'project-ref',
+      matchingFiles: ['test.txt'],
+      executionOptions: {
+        timeoutMs: 60000,
+        disableSlashCommands: false
+      }
+    }, fakeFetchOverride);
+
+    assert.ok(capturedPayloadOverride, 'Payload override phải được gửi');
+    assert.strictEqual(
+      capturedPayloadOverride.executionOptions?.timeoutMs,
+      60000,
+      'executionOptions.timeoutMs phải được ghi đè thành 60000'
+    );
+    assert.strictEqual(
+      capturedPayloadOverride.executionOptions?.disableSlashCommands,
+      false,
+      'executionOptions.disableSlashCommands phải được ghi đè thành false'
+    );
+  });
 
   // -------------------------------------------------------------
   // SUMMARY REPORT

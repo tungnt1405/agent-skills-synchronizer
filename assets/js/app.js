@@ -511,6 +511,9 @@ export function initApp() {
 
   // Event: 'skillsync:back-to-workstation' from Diff Inspector header/cancel
   document.addEventListener('skillsync:back-to-workstation', () => {
+    if (appStore.getState().syncSession?.status === 'Merged') {
+      appStore.resetExecutorState();
+    }
     appStore.setActiveView('workstation');
   });
 
@@ -595,6 +598,7 @@ export function initApp() {
   if (btnSuccessBackWorkstation) {
     btnSuccessBackWorkstation.addEventListener('click', () => {
       closeModal('confirm');
+      appStore.resetExecutorState();
       appStore.setActiveView('workstation');
     });
   }
@@ -603,10 +607,19 @@ export function initApp() {
   if (btnViewAuditLogs) {
     btnViewAuditLogs.addEventListener('click', () => {
       closeModal('confirm');
+      appStore.resetExecutorState();
       appStore.setActiveView('workstation');
       // Could activate #nav-item-audit or provide visual indicator
     });
   }
+
+  // Ensure modal-closed on success modal also resets executor state
+  document.addEventListener('skillsync:modal-closed', (e) => {
+    if (e.detail?.modalId === 'modal-success') {
+      appStore.resetExecutorState();
+      appStore.setActiveView('workstation');
+    }
+  });
 
   // Modal 4: Failure Modal actions
   const btnFailRollback = document.getElementById('btn-fail-rollback');

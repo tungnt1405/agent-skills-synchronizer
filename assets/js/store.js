@@ -411,7 +411,7 @@ function hasUnresolvedConflicts(diffFiles = []) {
 }
 
 function normalizeReviewPath(path) {
-  return String(path || '').replace(/^(skills|tais)\//, '');
+  return String(path || '').replace(/\\+/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '').replace(/^(skills|tais)\//, '');
 }
 
 export function mapPreviewFileToDiffFile(file, session = {}) {
@@ -789,32 +789,40 @@ class Store {
    * @returns {Array} filtered files
    */
   getFilteredFiles() {
-    const { activeFilter, fileTrees } = this.state;
+    const activeFilter = this.state.activeFilter || 'all';
+    const fileTrees = this.state.fileTrees || [];
+
+    // Always hide synced files
+    const nonSyncedTrees = fileTrees.filter((file) => file && file.status !== 'synced');
+
     if (activeFilter === 'all') {
-      return fileTrees;
+      return nonSyncedTrees;
     }
 
     if (activeFilter === '.yaml' || activeFilter === 'yaml' || activeFilter === '.yml' || activeFilter === 'yml') {
-      return fileTrees.filter(file => {
-        const name = file.name || '';
-        return file.type === 'yaml' || file.type === 'yml' || name.endsWith('.yaml') || name.endsWith('.yml');
+      return nonSyncedTrees.filter((file) => {
+        const name = (file?.name || '').toLowerCase();
+        const type = (file?.type || '').toLowerCase();
+        return type === 'yaml' || type === 'yml' || name.endsWith('.yaml') || name.endsWith('.yml');
       });
     }
 
     if (activeFilter === 'other') {
-      return fileTrees.filter(file => {
-        const ext = (file.type || '').toLowerCase();
-        const name = (file.name || '').toLowerCase();
+      return nonSyncedTrees.filter((file) => {
+        const ext = (file?.type || '').toLowerCase();
+        const name = (file?.name || '').toLowerCase();
         const isStandard = ext === 'md' || ext === 'json' || ext === 'yaml' || ext === 'yml' ||
           name.endsWith('.md') || name.endsWith('.json') || name.endsWith('.yaml') || name.endsWith('.yml');
         return !isStandard;
       });
     }
 
-    const ext = activeFilter.startsWith('.') ? activeFilter.substring(1) : activeFilter;
-    return fileTrees.filter(file => {
-      const name = file.name || '';
-      return file.type === ext || name.endsWith(activeFilter);
+    const dotFilter = activeFilter.startsWith('.') ? activeFilter.substring(1).toLowerCase() : activeFilter.toLowerCase();
+    const filterLower = activeFilter.toLowerCase();
+    return nonSyncedTrees.filter((file) => {
+      const name = (file?.name || '').toLowerCase();
+      const type = (file?.type || '').toLowerCase();
+      return type === dotFilter || name.endsWith(filterLower);
     });
   }
 
@@ -1150,6 +1158,7 @@ class Store {
     this.state.executorProgress = { current: 0, total: 0, percent: 0 };
     this.state.executorSessionId = '';
     this.state.executorStats = { selectedFiles: 0, processedFiles: 0, failedFiles: 0, additions: 0, deletions: 0 };
+    this.state.selectedFiles = [];
     this.state.pendingBatch = null;
     this.state.executionStatus = 'idle';
     this.state.executionError = '';
@@ -1236,6 +1245,12 @@ class Store {
         referenceIsContentAuthority: true
       }
     };
+
+    if (options && typeof options === 'object' && options.executionOptions) {
+      payload.executionOptions = options.executionOptions;
+    } else if (this.state.executionOptions) {
+      payload.executionOptions = this.state.executionOptions;
+    }
 
     try {
       const fetchImpl = typeof options === 'function' ? options : options?.fetchImpl;
@@ -1571,17 +1586,32 @@ class Store {
       }
     };
 
-    const reviewedPaths = new Set(
-      this.state.diffFiles.flatMap(file => [file.path, normalizeReviewPath(file.path)].filter(Boolean))
-    );
-    this.state.fileTrees = this.state.fileTrees.map(file => {
-      if (!reviewedPaths.has(file.path) && !reviewedPaths.has(normalizeReviewPath(file.path))) return file;
+    const cleanPath = (p) => String(p || '').replace(/\\+/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
+    const normalize = (p) => cleanPath(p).replace(/^(skills|tais)\//, '');
+    const reviewedPaths = new Set();
+    (this.state.diffFiles || []).forEach(file => {
+      const p = cleanPath(file?.path);
+      reviewedPaths.add(p);
+      reviewedPaths.add(normalize(p));
+    });
+    (this.state.selectedFiles || []).forEach(pRaw => {
+      const p = cleanPath(pRaw);
+      reviewedPaths.add(p);
+      reviewedPaths.add(normalize(p));
+    });
+
+    const now = Date.now();
+    this.state.fileTrees = (this.state.fileTrees || []).map(file => {
+      const p = cleanPath(file?.path);
+      const normP = normalize(p);
+      if (!reviewedPaths.has(p) && !reviewedPaths.has(normP)) return file;
       return {
         ...file,
         targetExists: true,
         targetSize: file.refSize || file.targetSize || file.size,
         status: 'synced',
-        note: 'Đã đồng bộ'
+        note: 'Đã khớp mã băm SHA-256',
+        lastSyncTime: now
       };
     });
 
@@ -1590,9 +1620,17 @@ class Store {
       synced: this.state.fileTrees.filter(file => file.status === 'synced').length,
       outdated: this.state.fileTrees.filter(file => file.status === 'outdated').length,
       missingTarget: this.state.fileTrees.filter(file => file.status === 'missing-target' || file.status === 'reference-only').length,
-      diffs: this.state.diffFiles.length
+      diffs: this.state.fileTrees.filter(file => file.status === 'outdated' || file.status === 'missing-target' || file.status === 'reference-only').length
     };
 
+    this.state.selectedFiles = [];
+    this.state.pendingBatch = null;
+    this.state.executorState = 'idle';
+    this.state.executionStatus = 'idle';
+    this.state.previewDiffStatus = 'idle';
+    this.state.previewDiffError = '';
+    this.state.previewDiffContext = { path: '', line: null };
+    this.state.workflowState = (this.state.scanStatus === 'scanned' ? 'scanned' : 'idle');
     this.state.lastSyncFailure = null;
     this.state.syncStatus = 'idle';
 
@@ -1692,6 +1730,8 @@ class Store {
 
     this.state.scanStatus = 'idle';
     this.state.syncStatus = 'idle';
+    this.state.selectedFiles = [];
+    this.state.pendingBatch = null;
     this.state.lastSyncFailure = null;
     this.state.activeView = 'workstation';
     this.state.scannedStats = {

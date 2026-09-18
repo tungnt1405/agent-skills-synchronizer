@@ -5,6 +5,7 @@
  */
 
 import { EXECUTOR_STEPS } from '../store.js';
+import { formatTimeAgo } from '../utils/time.js';
 
 const EXECUTOR_STEP_DEFS = [
   { key: 'prepare', label: '1. Chuẩn bị' },
@@ -766,29 +767,22 @@ export function renderWorkstation(container, store) {
     </button>`
         : '';
 
+      const formattedTime = formatTimeAgo(file.lastSyncTime);
+      const timeBadgeHtml = formattedTime
+        ? `<span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium bg-slate-800 text-slate-400 border border-slate-700 ml-1 shrink-0 whitespace-nowrap">
+             <span class="material-symbols-outlined text-[10px]">history</span>
+             <span>${escapeHtml(formattedTime)}</span>
+           </span>`
+        : '';
+
       // Build Left (Target) Cell
       let targetCellContent = '';
       if (file.targetExists) {
         let badgeHtml = '';
-        if (file.status === 'synced') {
+        if (file.status === 'target-only') {
           badgeHtml = `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-              <span class="material-symbols-outlined text-[12px]">check_circle</span>
-              <span>Đã đồng bộ</span>
-            </span>
-          `;
-        } else if (file.status === 'outdated') {
-          badgeHtml = `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30" title="${escapeHtml(file.note)}">
-              <span class="material-symbols-outlined text-[12px]">update</span>
-              <span>Cần cập nhật</span>
-            </span>
-          `;
-        } else {
-          badgeHtml = `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-              <span class="material-symbols-outlined text-[12px]">check_circle</span>
-              <span>Đã đồng bộ</span>
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
+              <span>Chỉ có trên Target</span>
             </span>
           `;
         }
@@ -824,14 +818,7 @@ export function renderWorkstation(container, store) {
       let refCellContent = '';
       if (file.refExists) {
         let badgeHtml = '';
-        if (file.status === 'synced') {
-          badgeHtml = `
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-              <span class="material-symbols-outlined text-[12px]">check_circle</span>
-              <span>Đã đồng bộ</span>
-            </span>
-          `;
-        } else if (file.status === 'outdated') {
+        if (file.status === 'outdated') {
           badgeHtml = `
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30" title="${escapeHtml(file.note)}">
               <span class="material-symbols-outlined text-[12px]">warning</span>
@@ -859,6 +846,7 @@ export function renderWorkstation(container, store) {
             <span class="material-symbols-outlined text-[16px] ${iconColor} shrink-0">${fileIcon}</span>
             <span class="font-mono text-xs text-slate-200 truncate font-medium">${escapeHtml(file.name)}</span>
             <span class="font-mono text-[11px] text-slate-500 shrink-0 ml-1">(${escapeHtml(file.refSize || file.size)})</span>
+            ${timeBadgeHtml}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             ${badgeHtml}
@@ -871,6 +859,7 @@ export function renderWorkstation(container, store) {
             <span class="material-symbols-outlined text-[16px] text-slate-600 shrink-0">remove</span>
             <span class="font-mono text-xs text-slate-500 line-through truncate">${escapeHtml(file.name)}</span>
             <span class="font-mono text-[11px] text-slate-600 shrink-0 ml-1">(—)</span>
+            ${timeBadgeHtml}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">

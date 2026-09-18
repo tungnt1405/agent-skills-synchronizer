@@ -22,6 +22,11 @@ export const DEFAULT_EXECUTION_OPTIONS = {
   referenceIsContentAuthority: true
 };
 
+export const DEFAULT_AI_EXECUTION_OPTIONS = Object.freeze({
+  timeoutMs: 180000,
+  disableSlashCommands: true
+});
+
 async function readJson(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -65,6 +70,7 @@ export async function executeSyncBatch(batch, fetchImpl = fetch) {
   const baseBatch = batch && typeof batch === 'object' ? batch : {};
   const aiEngineOverride = baseBatch.aiEngine && typeof baseBatch.aiEngine === 'object' ? baseBatch.aiEngine : {};
   const optionsOverride = baseBatch.options && typeof baseBatch.options === 'object' ? baseBatch.options : {};
+  const executionOptionsOverride = baseBatch.executionOptions && typeof baseBatch.executionOptions === 'object' ? baseBatch.executionOptions : {};
 
   const aiEngine = {
     ...DEFAULT_AI_ENGINE,
@@ -86,6 +92,10 @@ export async function executeSyncBatch(batch, fetchImpl = fetch) {
     options: {
       ...DEFAULT_EXECUTION_OPTIONS,
       ...optionsOverride
+    },
+    executionOptions: {
+      ...DEFAULT_AI_EXECUTION_OPTIONS,
+      ...executionOptionsOverride
     }
   };
 
