@@ -8,8 +8,10 @@
 
 'use strict';
 
-const { spawn } = require('node:child_process');
+const path = require('node:path');
+const { spawn, spawnSync } = require('node:child_process');
 
+const ROOT_DIR = path.resolve(__dirname, '..');
 const MAX_AGENT_OUTPUT_BYTES = 5 * 1024 * 1024; // 5MB
 
 /**
@@ -153,9 +155,16 @@ const AGENT_CATALOG = Object.freeze({
     provider: Object.freeze({ id: 'agy', label: 'AGY' }),
     versionArgs: Object.freeze(['--version']),
     modelArgs: Object.freeze(['models']),
-    buildMergeArgs: ({ model } = {}) => (model
-      ? ['--dangerously-skip-permissions', '--model', model]
-      : ['--dangerously-skip-permissions']),
+    buildMergeArgs: ({ model, disableSlashCommands = true } = {}) => {
+      const args = ['--dangerously-skip-permissions'];
+      if (disableSlashCommands) {
+        args.push('--disable-slash-commands');
+      }
+      if (model) {
+        args.push('--model', model);
+      }
+      return args;
+    },
     discoverModels: parseAgyModels
   }),
   copilot: Object.freeze({
@@ -232,8 +241,12 @@ function defaultRunProcess(cmdOrOptions, maybeArgs = [], extraOptions = {}) {
     const spawnOptions = {
       shell: false,
       windowsHide: true,
+      cwd: options.cwd || ROOT_DIR,
       ...options
     };
+    if (!spawnOptions.cwd) {
+      spawnOptions.cwd = ROOT_DIR;
+    }
 
     let child = null;
     let stdout = '';
@@ -256,11 +269,18 @@ function defaultRunProcess(cmdOrOptions, maybeArgs = [], extraOptions = {}) {
     }
 
     timer = setTimeout(() => {
-      if (child && !child.killed) {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // ignore kill failures
+      if (child && child.pid && !child.killed) {
+        if (isWindows) {
+          try {
+            spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+              windowsHide: true,
+              stdio: 'ignore'
+            });
+          } catch {
+            try { child.kill('SIGKILL'); } catch {}
+          }
+        } else {
+          try { child.kill('SIGKILL'); } catch {}
         }
       }
       finish({
@@ -769,7 +789,8 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
   try {
     const procResult = await runner(launch.command, launch.args, {
       input: prompt,
-      timeout: opts.timeout || 120000
+      timeout: opts.timeout || 120000,
+      ...(opts.cwd ? { cwd: opts.cwd } : {})
     });
 
     if (!procResult || typeof procResult !== 'object') {
@@ -852,5 +873,6 @@ module.exports = {
   runAgentMerge,
   defaultRunProcess,
   parseProbeModels,
-  parseAgyModels
+  parseAgyModels,
+  ROOT_DIR
 };

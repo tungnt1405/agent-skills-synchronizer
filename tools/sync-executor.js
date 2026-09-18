@@ -594,11 +594,31 @@ async function executeSyncBatch(batch, options = {}) {
     backupRoot
   };
 
+  let settingsTimeout = null;
+  try {
+    const settingsPath = path.join(ROOT_DIR, 'setting.json');
+    const rawSettings = await fs.readFile(settingsPath, 'utf8');
+    const parsed = JSON.parse(rawSettings);
+    settingsTimeout = parsed?.agentSync?.defaultTimeoutMs;
+  } catch {
+    // fallback an toàn nếu không có setting.json
+  }
+
+  const effectiveTimeout = batch?.executionOptions?.timeoutMs
+    || batch?.options?.timeoutMs
+    || options.timeout
+    || settingsTimeout
+    || 180000; // 3 phút mặc định
+
+  const agentMerger = typeof options.runAgentMerge === 'function'
+    ? options.runAgentMerge
+    : runAgentMerge;
+
   const mergeWithAgent = typeof options.mergeWithAgent === 'function'
     ? options.mergeWithAgent
     : async ({ kind, relativePath, targetContent, referenceContent, syncSessionId }) => {
       // For legacy unit tests where skipAgentCheck: true and no runProcess was provided:
-      if (options.skipAgentCheck && !options.runProcess) {
+      if (options.skipAgentCheck && !options.runProcess && !options.runAgentMerge) {
         if (kind === 'matching') {
           return {
             ok: true,
@@ -625,14 +645,15 @@ async function executeSyncBatch(batch, options = {}) {
         ? `${prompt}\n\nTarget content:\n${targetContent}\n\nReference content:\n${referenceContent}`
         : `${prompt}\n\nReference content:\n${referenceContent}`;
 
-      return await runAgentMerge({
+      return await agentMerger({
         agent: validatedAiEngine.agent,
         provider: validatedAiEngine.provider,
         model: validatedAiEngine.model,
         prompt: fullPrompt,
         sandbox: options.sandbox,
         runProcess: options.runProcess,
-        timeout: options.timeout
+        timeout: effectiveTimeout,
+        cwd: roots.targetRoot || ROOT_DIR
       });
     };
 

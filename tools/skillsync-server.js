@@ -19,6 +19,7 @@ const {
   DEFAULT_AGENT
 } = require('./sync-executor.js');
 const { discoverAgentCapabilities } = require('./agent-adapters.js');
+const { readSyncHistory, saveSuccessfulSync } = require('./sync-history.js');
 
 // -------------------------------------------------------------
 // Constants & Guards
@@ -316,6 +317,7 @@ async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR) 
   }
 
   const allRelPaths = Array.from(new Set([...targetMap.keys(), ...refMap.keys()])).sort((a, b) => a.localeCompare(b));
+  const syncHistory = (await readSyncHistory()) || {};
 
   const fileTrees = [];
   let synced = 0;
@@ -372,7 +374,8 @@ async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR) 
       targetExists: Boolean(tFile),
       refExists: Boolean(rFile),
       status,
-      note: status === 'synced' ? 'Đã khớp mã băm SHA-256' : 'Checksum khác hoặc file chỉ tồn tại ở một nguồn'
+      note: status === 'synced' ? 'Đã khớp mã băm SHA-256' : 'Checksum khác hoặc file chỉ tồn tại ở một nguồn',
+      lastSyncTime: typeof syncHistory[relPath] === 'number' ? syncHistory[relPath] : null
     });
   }
 
@@ -874,6 +877,12 @@ async function handleApi(req, res, url, deps = {}) {
     try {
       const batch = await readJsonBody(req);
       const result = await executeSyncBatch(batch);
+      try {
+        const saveHistoryFn = deps?.saveSuccessfulSync || saveSuccessfulSync;
+        await saveHistoryFn(result?.changedFiles);
+      } catch (historyErr) {
+        console.error('Failed to save sync history:', historyErr);
+      }
       const payload = JSON.stringify(result);
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
