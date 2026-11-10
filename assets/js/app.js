@@ -545,13 +545,29 @@ export function initApp() {
   // 5. Wire Navigation & Workflow Events
 
   // Event: 'skillsync:sync-now' from Workstation footer
+  let isSyncNowPending = false;
   document.addEventListener('skillsync:sync-now', async () => {
+    if (isSyncNowPending) return;
     const batch = appStore.createPendingBatch();
     if (!batch) return;
-    await appStore.loadPromptTemplates();
-    updatePromptTemplateUI(appStore.getState());
-    updateConfirmModalData(appStore.getState());
-    openModal('modal-confirm');
+    isSyncNowPending = true;
+    const syncBtn = document.getElementById('btn-sync-now');
+    if (syncBtn) {
+      syncBtn.disabled = true;
+      syncBtn.setAttribute('aria-busy', 'true');
+    }
+    try {
+      await appStore.loadPromptTemplates();
+      updatePromptTemplateUI(appStore.getState());
+      updateConfirmModalData(appStore.getState());
+      openModal('modal-confirm');
+    } finally {
+      isSyncNowPending = false;
+      if (syncBtn) {
+        syncBtn.disabled = false;
+        syncBtn.removeAttribute('aria-busy');
+      }
+    }
   });
 
   // Event: 'skillsync:modal-closed' to cancel pending batch on abort/dismiss
@@ -653,10 +669,6 @@ export function initApp() {
   if (btnProceedConfirm) {
     btnProceedConfirm.addEventListener('click', () => {
       if (appStore.getState().workflowState !== 'selected-for-sync') return;
-      const selectEl = document.getElementById('select-prompt-template');
-      if (selectEl && selectEl.value) {
-        appStore.setSelectedTemplateId(selectEl.value);
-      }
       btnProceedConfirm.disabled = true;
       const batch = appStore.confirmPendingBatch();
       if (!batch) {
