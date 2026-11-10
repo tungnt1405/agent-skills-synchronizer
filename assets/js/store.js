@@ -8,6 +8,7 @@ import {
   fetchSourceProjects,
   fetchSourceScan,
   fetchAvailableAgents,
+  fetchPromptTemplates,
   executeSyncBatch,
   checkAgentCli,
   fetchDiffPreviewBatch
@@ -476,6 +477,10 @@ class Store {
       agentOptionsError: null,
       targetAgent: 'agy',
       targetModel: '',
+      promptTemplates: [],
+      promptTemplatesStatus: 'idle',
+      selectedTemplateId: '',
+      promptTemplateError: null,
       executorProvider: 'local-reference-merge-v1',
       activeSyncSession: null,
       executionStatus: 'idle',
@@ -1122,6 +1127,66 @@ class Store {
   }
 
   /**
+   * Load prompt templates from the local server.
+   * @param {Function} [fetchImpl=fetch]
+   * @returns {Promise<Array>}
+   */
+  async loadPromptTemplates(fetchImpl = fetch) {
+    this.state.promptTemplatesStatus = 'loading';
+    this.state.promptTemplateError = null;
+    this.notify();
+
+    try {
+      const result = await fetchPromptTemplates(fetchImpl);
+      const templates = Array.isArray(result.templates) ? result.templates : [];
+      const current = this.state.selectedTemplateId;
+      this.state.promptTemplates = templates;
+      this.state.promptTemplatesStatus = 'loaded';
+
+      if (templates.some((template) => template.id === current)) {
+        this.state.selectedTemplateId = current;
+      } else if (templates.some((template) => template.id === 'default')) {
+        this.state.selectedTemplateId = 'default';
+      } else {
+        this.state.selectedTemplateId = templates[0]?.id || '';
+      }
+
+      this.state.promptTemplateError = result.sampleContent
+        ? {
+            message: `Không tìm thấy template. Tạo file: ${result.expectedPath}`,
+            expectedPath: result.expectedPath,
+            sampleContent: result.sampleContent
+          }
+        : null;
+
+      this.notify();
+      return templates;
+    } catch (err) {
+      this.state.promptTemplates = [];
+      this.state.promptTemplatesStatus = 'error';
+      this.state.selectedTemplateId = '';
+      this.state.promptTemplateError = {
+        message: err.message || 'Không thể tải prompt template.',
+        expectedPath: err.expectedPath || 'templates/prompt/default.md',
+        sampleContent: err.sampleContent || ''
+      };
+      this.notify();
+      return [];
+    }
+  }
+
+  /**
+   * Select an available prompt template.
+   * @param {string} templateId
+   */
+  setSelectedTemplateId(templateId) {
+    if (typeof templateId !== 'string') return;
+    if (!this.state.promptTemplates.some((template) => template.id === templateId)) return;
+    this.state.selectedTemplateId = templateId;
+    this.notify();
+  }
+
+  /**
    * Check installation of current target AI agent
    * @param {Function} [fetchImpl]
    * @returns {Promise<object>}
@@ -1220,6 +1285,7 @@ class Store {
     this.state.rollbackResult = null;
     this.state.failureLog = '';
     this.state.missingAgentInfo = null;
+    this.state.promptTemplateError = null;
     this.state.workflowState = 'ai-analyzing';
     this.notify();
 
@@ -1239,6 +1305,7 @@ class Store {
       ...this.state.pendingBatch,
       agent: this.state.targetAgent || 'local',
       aiEngine,
+      templateId: this.state.selectedTemplateId || undefined,
       options: {
         createBackup: true,
         preserveTargetStructure: true,
@@ -1340,6 +1407,14 @@ class Store {
             agent: err.missingAgent,
             checkCommand: err.checkCommand || `${err.missingAgent} --version`,
             message: err.message
+          }
+        : null;
+
+      this.state.promptTemplateError = (err.code === 'TEMPLATE_MISSING' || err.code === 'TEMPLATE_INVALID')
+        ? {
+            message: err.message || 'Prompt template không hợp lệ.',
+            expectedPath: err.expectedPath || '',
+            sampleContent: err.sampleContent || ''
           }
         : null;
 

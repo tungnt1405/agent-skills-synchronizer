@@ -21,7 +21,8 @@ const { spawnSync } = require('node:child_process');
 const {
   mergeMatchingFile,
   createNewFile,
-  buildTargetReferenceSyncPrompt
+  readPromptTemplate,
+  composePromptTemplate
 } = require('./ai-merge-engine.js');
 const {
   AGENT_CATALOG,
@@ -610,6 +611,22 @@ async function executeSyncBatch(batch, options = {}) {
     || settingsTimeout
     || 180000; // 3 phút mặc định
 
+  const templateId = (typeof batch?.templateId === 'string' && batch.templateId.trim())
+    ? batch.templateId.trim()
+    : 'default';
+
+  let promptTemplateText;
+  try {
+    promptTemplateText = (await readPromptTemplate(templateId)).text;
+  } catch (templateErr) {
+    templateErr.statusCode = 422;
+    templateErr.failedStep = 'preflight';
+    templateErr.publicLog = templateErr.code === 'TEMPLATE_MISSING'
+      ? `Prompt template not found: ${templateErr.expectedPath}`
+      : `Prompt template invalid: ${templateErr.expectedPath}`;
+    throw templateErr;
+  }
+
   const agentMerger = typeof options.runAgentMerge === 'function'
     ? options.runAgentMerge
     : runAgentMerge;
@@ -638,18 +655,18 @@ async function executeSyncBatch(batch, options = {}) {
         }
       }
 
-      const prompt = buildTargetReferenceSyncPrompt([
-        { targetPath: relativePath, referencePath: relativePath }
-      ]);
-      const fullPrompt = kind === 'matching'
-        ? `${prompt}\n\nTarget content:\n${targetContent}\n\nReference content:\n${referenceContent}`
-        : `${prompt}\n\nReference content:\n${referenceContent}`;
+      const prompt = composePromptTemplate(promptTemplateText, {
+        TARGET_PATH: relativePath,
+        REFERENCE_PATH: relativePath,
+        TARGET_CONTENT: kind === 'matching' ? targetContent : '',
+        REFERENCE_CONTENT: referenceContent
+      });
 
       return await agentMerger({
         agent: validatedAiEngine.agent,
         provider: validatedAiEngine.provider,
         model: validatedAiEngine.model,
-        prompt: fullPrompt,
+        prompt,
         sandbox: options.sandbox,
         runProcess: options.runProcess,
         timeout: effectiveTimeout,
@@ -693,11 +710,12 @@ async function executeSyncBatch(batch, options = {}) {
   }
 
   // 5. Standard synchronization prompt
-  const syncPairs = operations.map((op) => ({
-    targetPath: op.relativePath,
-    referencePath: op.relativePath
-  }));
-  const syncPrompt = buildTargetReferenceSyncPrompt(syncPairs);
+  const syncPrompt = composePromptTemplate(promptTemplateText, {
+    TARGET_PATH: `${operations.length} files`,
+    REFERENCE_PATH: `${operations.length} files`,
+    TARGET_CONTENT: '',
+    REFERENCE_CONTENT: ''
+  });
 
   // 6. Changed files payload
   const changedFiles = operations.map((operation, index) => ({

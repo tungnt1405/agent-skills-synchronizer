@@ -64,52 +64,97 @@ export function escapeHtml(str) {
 }
 
 /**
- * Updates Conflict Warning Modal UI with list of unresolved conflicting files
+ * Copy text to clipboard with accessible status feedback.
+ * @param {string} text
+ * @param {HTMLElement|null} statusEl
+ */
+function copyToClipboard(text, statusEl) {
+  if (!text) return;
+  const setStatus = (message) => {
+    if (statusEl) statusEl.textContent = message;
+  };
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(() => setStatus('Đã copy template mẫu.'))
+      .catch(() => setStatus('Không thể copy tự động. Hãy chọn và copy thủ công.'));
+  } else {
+    setStatus('Không thể copy tự động. Hãy chọn và copy thủ công.');
+  }
+}
+
+/**
+ * Render prompt template selector or missing-template error.
  * @param {object} state
  */
-function updateConflictModalData(state) {
-  const fileListContainer = document.getElementById('modal-conflict-file-list');
-  const badgeCountEl = document.getElementById('modal-conflict-badge-count');
+function updatePromptTemplateUI(state = {}) {
+  const select = document.getElementById('select-prompt-template');
+  const errorBox = document.getElementById('template-error');
+  const proceedBtn = document.getElementById('btn-proceed-confirm');
+  if (!select || !errorBox || !proceedBtn) return;
 
-  const diffFiles = state.diffFiles || [];
-  const conflictedFiles = diffFiles.filter((f) =>
-    (f.blocks || []).some((b) => b.type === 'conflict' && b.resolution === 'unresolved')
-  );
+  select.innerHTML = '';
+  const templates = Array.isArray(state.promptTemplates) ? state.promptTemplates : [];
 
-  if (badgeCountEl) {
-    badgeCountEl.textContent = `${conflictedFiles.length} tệp xung đột`;
-  }
+  if (templates.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Không có template';
+    select.appendChild(option);
+    select.disabled = true;
+    proceedBtn.disabled = true;
+    errorBox.classList.remove('hidden');
+    errorBox.innerHTML = '';
 
-  if (fileListContainer) {
-    fileListContainer.innerHTML = '';
-    if (conflictedFiles.length === 0) {
-      fileListContainer.innerHTML = `
-        <div class="p-3 text-xs text-slate-500 font-mono text-center">
-          Tất cả các tệp tin xung đột đã được giải quyết hoặc không có xung đột.
-        </div>
-      `;
-      return;
+    const error = state.promptTemplateError || {};
+    const message = document.createElement('p');
+    message.className = 'text-xs text-rose-300';
+    message.textContent = error.message || 'Không tìm thấy prompt template.';
+    errorBox.appendChild(message);
+
+    if (error.expectedPath) {
+      const pathEl = document.createElement('p');
+      pathEl.className = 'text-[11px] text-slate-400 font-mono';
+      pathEl.textContent = `Cần tạo: ${error.expectedPath}`;
+      errorBox.appendChild(pathEl);
     }
 
-    conflictedFiles.forEach((file) => {
-      const conflictCount = (file.blocks || []).filter(
-        (b) => b.type === 'conflict' && b.resolution === 'unresolved'
-      ).length;
-      const row = document.createElement('div');
-      row.className =
-        'p-2.5 rounded-lg bg-surface-container-low border border-slate-800 flex items-center justify-between gap-2 text-xs font-mono';
-      row.innerHTML = `
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="material-symbols-outlined text-amber-400 text-[16px] shrink-0">warning</span>
-          <span class="text-slate-200 truncate font-medium">${escapeHtml(file.path || file.name)}</span>
-        </div>
-        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0 font-semibold">
-          ${conflictCount} conflict${conflictCount > 1 ? 's' : ''}
-        </span>
-      `;
-      fileListContainer.appendChild(row);
-    });
+    if (error.sampleContent) {
+      const pre = document.createElement('pre');
+      pre.className = 'max-h-48 overflow-auto rounded-lg bg-black/60 border border-slate-700 p-3 text-[11px] text-slate-200 font-mono whitespace-pre-wrap';
+      pre.textContent = error.sampleContent;
+      errorBox.appendChild(pre);
+
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.id = 'btn-copy-template-sample';
+      copyBtn.className = 'px-3 py-1.5 rounded-lg bg-primary/20 hover:bg-primary/30 border border-primary/40 text-primary-light text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors';
+      copyBtn.innerHTML = '<span class="material-symbols-outlined text-[15px]">content_copy</span><span>Copy template mẫu</span>';
+      copyBtn.setAttribute('aria-label', 'Copy nội dung template mẫu');
+
+      const status = document.createElement('span');
+      status.className = 'text-[11px] text-slate-400';
+      status.setAttribute('aria-live', 'polite');
+      copyBtn.addEventListener('click', () => copyToClipboard(error.sampleContent, status));
+
+      errorBox.appendChild(copyBtn);
+      errorBox.appendChild(status);
+    }
+    return;
   }
+
+  select.disabled = false;
+  proceedBtn.disabled = false;
+  errorBox.classList.add('hidden');
+  errorBox.innerHTML = '';
+
+  for (const template of templates) {
+    const option = document.createElement('option');
+    option.value = template.id;
+    option.textContent = template.label || template.id;
+    select.appendChild(option);
+  }
+  select.value = state.selectedTemplateId || templates[0].id;
 }
 
 /**
@@ -167,6 +212,62 @@ export function updateFailureModalData(state = {}) {
   const logEl = document.getElementById('modal-failure-log') || modalEl.querySelector('.bg-black\\/70');
   const guidanceEl = document.getElementById('modal-failure-guidance-text') || document.getElementById('modal-failure-guidance') || modalEl.querySelector('.p-3\\.5 p, [data-guidance]');
   const btnRollback = document.getElementById('btn-fail-rollback');
+  const templateError = state.promptTemplateError;
+  const isTemplateFailure = Boolean(
+    templateError &&
+    (state.errorCode === 'TEMPLATE_MISSING' || state.errorCode === 'TEMPLATE_INVALID')
+  );
+  const btnCopyTemplate = document.getElementById('btn-copy-failure-template');
+  const templateCopyStatus = document.getElementById('template-copy-status');
+
+  if (isTemplateFailure) {
+    if (titleEl) {
+      titleEl.textContent = 'Thiếu Prompt Template';
+    }
+    if (subtitleEl) {
+      subtitleEl.textContent = 'Không thể gửi prompt cho AI Agent vì template chưa tồn tại hoặc không hợp lệ.';
+    }
+    if (logEl) {
+      logEl.innerHTML = '';
+      const messageEl = document.createElement('div');
+      messageEl.className = 'text-rose-400 font-semibold';
+      messageEl.textContent = templateError.message || 'Prompt template không hợp lệ.';
+      logEl.appendChild(messageEl);
+
+      if (templateError.expectedPath) {
+        const pathEl = document.createElement('div');
+        pathEl.className = 'text-amber-300 font-mono text-[11px] pt-1';
+        pathEl.textContent = `expected: ${templateError.expectedPath}`;
+        logEl.appendChild(pathEl);
+      }
+
+      if (templateError.sampleContent) {
+        const pre = document.createElement('pre');
+        pre.className = 'mt-2 max-h-48 overflow-auto rounded-lg bg-black/60 border border-slate-700 p-3 text-[11px] text-slate-200 font-mono whitespace-pre-wrap';
+        pre.textContent = templateError.sampleContent;
+        logEl.appendChild(pre);
+      }
+    }
+    if (guidanceEl) {
+      guidanceEl.textContent = `Tạo file ${templateError.expectedPath || 'templates/prompt/default.md'} với nội dung mẫu bên trên rồi thử lại.`;
+    }
+    if (btnRollback) {
+      btnRollback.classList.add('hidden');
+    }
+    if (btnCopyTemplate) {
+      btnCopyTemplate.classList.remove('hidden');
+      btnCopyTemplate.onclick = () => copyToClipboard(
+        templateError.sampleContent || '',
+        templateCopyStatus
+      );
+    }
+    return;
+  }
+
+  if (btnCopyTemplate) {
+    btnCopyTemplate.classList.add('hidden');
+  }
+
   const isLockedFailure = state.errorType === 'target_locked' ||
     (state.syncStatus === 'Failed_Locked' && state.lastSyncFailure?.errorType === 'target_locked');
 
@@ -268,7 +369,7 @@ export function showMainScreenAgentAlert(state = {}) {
     <div class="flex items-start gap-3 min-w-0">
       <span class="material-symbols-outlined text-rose-400 text-[22px] shrink-0 mt-0.5">warning</span>
       <div class="text-xs sm:text-sm text-slate-200 leading-relaxed">
-        <span class="font-bold text-rose-300">⚠️ Yêu cầu cài đặt AI Agent:</span>
+        <span class="font-bold text-rose-300">Yêu cầu cài đặt AI Agent:</span>
         <span>Agent '<strong>${escapeHtml(agent)}</strong>' chưa được cài đặt trên hệ thống! Vui lòng cài đặt và kiểm tra bằng</span>
         <code class="px-1.5 py-0.5 rounded bg-black/60 font-mono text-amber-300 text-xs border border-rose-500/30 font-semibold">${escapeHtml(checkCommand)}</code>
         <span>trước khi tiếp tục đồng bộ.</span>
@@ -401,22 +502,8 @@ export function initApp() {
 
   const comparatorContainer = document.getElementById('view-comparator');
   const diffInspectorContainer = document.getElementById('view-diff-inspector');
-  const navItemComparator = document.getElementById('nav-item-comparator');
 
-  const btnSidebarToggle = document.getElementById('btn-sidebar-toggle');
-  const sidebar = document.getElementById('sidebar');
-  const sidebarBackdrop = document.getElementById('sidebar-backdrop');
-  const quickSearchTrigger = document.getElementById('quick-search-trigger');
-  const quickCommandInput = document.getElementById('quick-command-input');
-  const shortcutBadge = document.getElementById('search-shortcut-badge');
-
-  // 1. Platform-adaptive keyboard shortcut label
-  if (shortcutBadge) {
-    const isMac = typeof navigator !== 'undefined' && navigator.userAgent.toUpperCase().indexOf('MAC') >= 0;
-    shortcutBadge.textContent = isMac ? '⌘K' : 'Ctrl+K';
-  }
-
-  // 2. Initialize Workstation view once in comparatorContainer
+  // 1. Initialize Workstation view once in comparatorContainer
   if (comparatorContainer) {
     renderWorkstation(comparatorContainer, appStore);
   }
@@ -438,7 +525,6 @@ export function initApp() {
 
   // 4. Synchronize views with store activeView state without destroying DOM
   function syncViews(state) {
-    // Update Topbar Executor Status on every state update
     updateTopbarExecutorStatus(state);
 
     if (!comparatorContainer || !diffInspectorContainer) return;
@@ -446,21 +532,9 @@ export function initApp() {
     if (state.activeView === 'diff-inspector') {
       comparatorContainer.classList.add('hidden');
       diffInspectorContainer.classList.remove('hidden');
-
-      if (navItemComparator) {
-        navItemComparator.classList.remove('bg-primary/15', 'border-l-2', 'border-primary', 'text-white');
-        navItemComparator.classList.add('text-slate-400');
-        navItemComparator.removeAttribute('aria-current');
-      }
     } else {
       diffInspectorContainer.classList.add('hidden');
       comparatorContainer.classList.remove('hidden');
-
-      if (navItemComparator) {
-        navItemComparator.classList.add('bg-primary/15', 'border-l-2', 'border-primary', 'text-white');
-        navItemComparator.classList.remove('text-slate-400');
-        navItemComparator.setAttribute('aria-current', 'page');
-      }
     }
   }
 
@@ -471,9 +545,11 @@ export function initApp() {
   // 5. Wire Navigation & Workflow Events
 
   // Event: 'skillsync:sync-now' from Workstation footer
-  document.addEventListener('skillsync:sync-now', () => {
+  document.addEventListener('skillsync:sync-now', async () => {
     const batch = appStore.createPendingBatch();
     if (!batch) return;
+    await appStore.loadPromptTemplates();
+    updatePromptTemplateUI(appStore.getState());
     updateConfirmModalData(appStore.getState());
     openModal('modal-confirm');
   });
@@ -565,11 +641,22 @@ export function initApp() {
 
   // 6. Wire Modal Action Buttons
 
+  const promptTemplateSelect = document.getElementById('select-prompt-template');
+  if (promptTemplateSelect) {
+    promptTemplateSelect.addEventListener('change', () => {
+      appStore.setSelectedTemplateId(promptTemplateSelect.value);
+    });
+  }
+
   // Modal 1: Confirmation Modal actions
   const btnProceedConfirm = document.getElementById('btn-proceed-confirm');
   if (btnProceedConfirm) {
     btnProceedConfirm.addEventListener('click', () => {
       if (appStore.getState().workflowState !== 'selected-for-sync') return;
+      const selectEl = document.getElementById('select-prompt-template');
+      if (selectEl && selectEl.value) {
+        appStore.setSelectedTemplateId(selectEl.value);
+      }
       btnProceedConfirm.disabled = true;
       const batch = appStore.confirmPendingBatch();
       if (!batch) {
@@ -581,15 +668,6 @@ export function initApp() {
         detail: batch
       }));
       btnProceedConfirm.disabled = false;
-    });
-  }
-
-  // Modal 2: Merge Conflict Warning Modal actions
-  const btnOpenInspectorFromWarning = document.getElementById('btn-open-inspector-from-warning');
-  if (btnOpenInspectorFromWarning) {
-    btnOpenInspectorFromWarning.addEventListener('click', () => {
-      closeModal('confirm');
-      appStore.setActiveView('diff-inspector');
     });
   }
 
@@ -709,83 +787,17 @@ export function initApp() {
     });
   }
 
-  // Navigation sidebar item click
-  if (navItemComparator) {
-    navItemComparator.addEventListener('click', (e) => {
-      if (appStore.getState().activeView === 'diff-inspector') {
-        e.preventDefault();
-        appStore.setActiveView('workstation');
-      }
-    });
-  }
-
-  // 7. Responsive Mobile Drawer Sidebar Controls
-  function toggleSidebar() {
-    if (!sidebar || !sidebarBackdrop) return;
-    const isHidden = sidebar.classList.contains('-translate-x-full');
-    if (isHidden) {
-      sidebar.classList.remove('-translate-x-full');
-      sidebarBackdrop.classList.remove('hidden');
-    } else {
-      closeSidebar();
-    }
-  }
-
-  function closeSidebar() {
-    if (!sidebar || !sidebarBackdrop) return;
-    sidebar.classList.add('-translate-x-full');
-    sidebarBackdrop.classList.add('hidden');
-  }
-
-  if (btnSidebarToggle) {
-    btnSidebarToggle.addEventListener('click', toggleSidebar);
-  }
-
-  if (sidebarBackdrop) {
-    sidebarBackdrop.addEventListener('click', closeSidebar);
-  }
-
-  // Auto-close mobile drawer when any navigation link is clicked
-  if (sidebar) {
-    const navLinks = sidebar.querySelectorAll('a');
-    navLinks.forEach((link) => {
-      link.addEventListener('click', () => {
-        if (window.innerWidth < 768) {
-          closeSidebar();
-        }
-      });
-    });
-  }
-
-  // Handle Quick Search click to focus input
-  if (quickSearchTrigger && quickCommandInput) {
-    quickSearchTrigger.addEventListener('click', () => {
-      quickCommandInput.focus();
-    });
-  }
-
-  // 8. Global Keyboard Shortcuts: ⌘K / Ctrl+K, ⌘Enter / Ctrl+Enter, Escape
+  // 7. Global Keyboard Shortcuts: ⌘Enter / Ctrl+Enter, Escape
   window.addEventListener('keydown', (e) => {
     // If a modal is currently open, suppress background shortcuts
     if (getActiveModalId()) {
-      if ((e.metaKey || e.ctrlKey) && (e.key.toLowerCase() === 'k' || e.key === 'Enter')) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
         return;
       }
       if (e.key === 'Escape') {
         // Handled by modal manager
         return;
-      }
-    }
-
-    // Quick search trigger shortcut (Ctrl+K / ⌘K)
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-      e.preventDefault();
-      if (quickCommandInput) {
-        quickCommandInput.focus();
-        quickCommandInput.select();
-      } else if (quickSearchTrigger) {
-        quickSearchTrigger.click();
       }
     }
 
@@ -815,16 +827,11 @@ export function initApp() {
       }
     }
 
-    // Escape key handling: priority to Modal, then Mobile Sidebar
+    // Escape key handling: priority to Modal
     if (e.key === 'Escape') {
       if (getActiveModalId()) {
         // Modal manager takes priority and closes modal
         return;
-      }
-
-      // If modal is not open, close mobile drawer if open
-      if (sidebar && !sidebar.classList.contains('-translate-x-full')) {
-        closeSidebar();
       }
     }
   });

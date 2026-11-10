@@ -39,6 +39,9 @@ async function readJson(response) {
     err.failedStep = data.failedStep || null;
     err.recoverable = data.recoverable !== undefined ? data.recoverable : true;
     err.rollback = data.rollback || null;
+    err.templateId = data.templateId || null;
+    err.expectedPath = data.expectedPath || null;
+    err.sampleContent = data.sampleContent || '';
     throw err;
   }
   return data;
@@ -52,6 +55,16 @@ export async function fetchSourceProjects(fetchImpl = fetch) {
 export async function fetchAvailableAgents(fetchImpl = fetch) {
   const data = await readJson(await fetchImpl(`${API_BASE}/api/agents`));
   return Array.isArray(data?.agents) ? data.agents : [];
+}
+
+export async function fetchPromptTemplates(fetchImpl = fetch) {
+  const data = await readJson(await fetchImpl(`${API_BASE}/api/templates`));
+  return {
+    templates: Array.isArray(data?.templates) ? data.templates : [],
+    directory: data?.directory || 'templates/prompt',
+    expectedPath: data?.expectedPath || 'templates/prompt/default.md',
+    sampleContent: data?.sampleContent || ''
+  };
 }
 
 export async function fetchSourceScan(target, reference, fetchImpl = fetch) {

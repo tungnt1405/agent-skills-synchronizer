@@ -30,9 +30,9 @@ SkillSyncPro được phát triển theo triết lý **Zero-Build Native SPA**:
 
 ---
 
-## 2. 6 Màn hình Giao diện Tham chiếu
+## 2. 5 Màn hình Giao diện Tham chiếu
 
-Ứng dụng tái hiện trực quan, nhất quán về bố cục, thẩm mỹ và luồng tương tác từ 6 màn hình giao diện chuẩn trong hệ thống thiết kế SkillSyncPro UI/UX:
+Ứng dụng tái hiện trực quan, nhất quán về bố cục, thẩm mỹ và luồng tương tác từ 5 màn hình giao diện chuẩn trong hệ thống thiết kế SkillSyncPro UI/UX:
 
 | STT | Tên màn hình | Mã định danh màn hình | Vai trò & Tính năng chính |
 | :---: | :--- | :--- | :--- |
@@ -41,7 +41,6 @@ SkillSyncPro được phát triển theo triết lý **Zero-Build Native SPA**:
 | **3** | **Diff Review & Approve/Reject Inspector** | `SCREEN-03` | Trình duyệt Diff song song trước/sau cho toàn bộ lô AI-modified files: danh sách file thay đổi bên trái, code diff hai cột bên phải, trạng thái tổng quát "All checks passed", nút **Approve & Merge** để giữ thay đổi và xoá backup, nút **Reject/Abort** để rollback toàn lô. |
 | **4** | **Merge Success Modal** | `SCREEN-04` | Thông báo hợp nhất thành công với hiệu ứng màu ngọc bích: Hiển thị Mã phiên đồng bộ (`syncSessionId`), số tệp cập nhật, thống kê dòng thêm/xóa (+x/-y), xác nhận đã xóa backup của lô và nút quay lại Workstation. |
 | **5** | **Merge Failure Modal** | `SCREEN-05` | Hộp thoại cảnh báo sự cố kỹ thuật: Hiển thị Terminal mô phỏng log lỗi, bước lỗi (`failedStep`), mã lỗi (`errorCode`), nút Khôi phục Rollback và nút Thử lại tác vụ. |
-| **6** | **Merge Conflict Warning Modal** | `SCREEN-06` | Cảnh báo phân kỳ nhánh nghiêm trọng khi bấm Đồng bộ ngay mà vẫn còn khối xung đột chưa xử lý: Liệt kê danh sách các tệp đang vướng conflict kèm nút mở trực tiếp Diff Inspector để giải quyết. |
 
 ---
 
@@ -51,11 +50,9 @@ SkillSyncPro hỗ trợ bộ phím tắt chuyên nghiệp theo chuẩn Desktop A
 
 | Phím tắt (Windows/Linux) | Phím tắt (macOS) | Phạm vi / Ngữ cảnh | Hành động thực thi |
 | :--- | :--- | :--- | :--- |
-| <kbd>Ctrl</kbd> + <kbd>K</kbd> | <kbd>⌘</kbd> + <kbd>K</kbd> | Toàn ứng dụng | Di chuyển con trỏ và bôi đen ô tìm kiếm nhanh (Quick Command Search). |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | <kbd>⌘</kbd> + <kbd>Enter</kbd> | Tại Workstation | Kích hoạt tác vụ quét thư mục hai nguồn (Scan Trigger). |
 | <kbd>Ctrl</kbd> + <kbd>Enter</kbd> | <kbd>⌘</kbd> + <kbd>Enter</kbd> | Tại Diff Inspector | Áp dụng hợp nhất và commit (Apply Merge & Commit). |
 | <kbd>Escape</kbd> | <kbd>Escape</kbd> | Khi mở Modal | Đóng ngay Modal đang kích hoạt và trả lại con trỏ chuột cho phần tử trước đó. |
-| <kbd>Escape</kbd> | <kbd>Escape</kbd> | Khi mở Mobile Drawer | Đóng thanh điều hướng bên trái trên thiết bị di động. |
 | <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | <kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd> | Trong Modal / Form | Bẫy tiêu điểm (Focus Trap) tuần hoàn an toàn giữa các nút bấm và ô nhập liệu. |
 
 ---
@@ -167,6 +164,9 @@ sync_supperpowers_and_tais/
 │           ├── workstation.js           # View Component: Comparator Workstation (SCREEN-01)
 │           └── diff-inspector.js        # View Component: Git Diff Inspector (SCREEN-03)
 ├── sources/                             # Không gian làm việc chứa các kho mã nguồn đối chiếu (Target & Reference)
+├── templates/
+│   └── prompt/
+│       └── default.md                   # Prompt template mặc định cho AI Agent
 ├── tests/
 │   └── ui-smoke.test.js                 # Bộ kiểm thử tự động End-to-End bằng Node.js thuần
 ├── tools/
@@ -180,6 +180,23 @@ sync_supperpowers_and_tais/
 ├── README.md                            # Tài liệu hướng dẫn sử dụng và báo cáo kiểm thử
 └── .gitignore                           # Cấu hình bỏ qua các tệp tạm, sao lưu và artifacts
 ```
+
+---
+
+## 5.1. Prompt Templates
+
+Prompt gửi AI Agent được đọc từ `templates/prompt/<id>.md` ở server, không hardcode trong JavaScript.
+
+Placeholder bắt buộc:
+
+- `{{TARGET_PATH}}`
+- `{{REFERENCE_PATH}}`
+- `{{TARGET_CONTENT}}`
+- `{{REFERENCE_CONTENT}}`
+
+Thêm template mới bằng cách tạo file `.md` trong `templates/prompt/`. Tên file (bỏ `.md`) là `id` hiển thị trong modal xác nhận. File phải chứa `{{REFERENCE_CONTENT}}` và không được là symlink.
+
+Nếu template thiếu hoặc không hợp lệ, batch dừng trước backup/write; UI hiển thị đường dẫn cần tạo và nội dung mẫu để copy.
 
 ---
 

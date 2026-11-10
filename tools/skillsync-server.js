@@ -19,6 +19,7 @@ const {
   DEFAULT_AGENT
 } = require('./sync-executor.js');
 const { discoverAgentCapabilities } = require('./agent-adapters.js');
+const { listPromptTemplates, SAMPLE_PROMPT_TEMPLATE } = require('./ai-merge-engine.js');
 const { readSyncHistory, saveSuccessfulSync } = require('./sync-history.js');
 
 // -------------------------------------------------------------
@@ -716,6 +717,37 @@ async function handleApi(req, res, url, deps = {}) {
     return true;
   }
 
+  if (url.pathname === '/api/templates') {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const err = new Error(`Method ${req.method} Not Allowed`);
+      err.statusCode = 405;
+      throw err;
+    }
+
+    const listFn = deps?.listPromptTemplates || listPromptTemplates;
+    const templates = await listFn();
+    const result = {
+      templates,
+      directory: 'templates/prompt',
+      expectedPath: 'templates/prompt/default.md'
+    };
+    if (templates.length === 0) {
+      result.sampleContent = deps?.samplePromptTemplate || SAMPLE_PROMPT_TEMPLATE;
+    }
+
+    const payload = JSON.stringify(result);
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(payload)
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+    } else {
+      res.end(payload);
+    }
+    return true;
+  }
+
   if (url.pathname === '/api/agents') {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       const err = new Error(`Method ${req.method} Not Allowed`);
@@ -903,7 +935,10 @@ async function handleApi(req, res, url, deps = {}) {
         recoverable: err.recoverable !== undefined ? err.recoverable : true,
         failureLog,
         missingAgent: err.missingAgent || null,
-        checkCommand: err.checkCommand || null
+        checkCommand: err.checkCommand || null,
+        templateId: err.templateId || null,
+        expectedPath: err.expectedPath || null,
+        sampleContent: err.sampleContent || '',
       });
       res.writeHead(statusCode, {
         'Content-Type': 'application/json; charset=utf-8',
@@ -1047,7 +1082,10 @@ function createServer() {
           recoverable: err.recoverable !== undefined ? err.recoverable : true,
           failureLog,
           missingAgent: err.missingAgent || null,
-          checkCommand: err.checkCommand || null
+          checkCommand: err.checkCommand || null,
+          templateId: err.templateId || null,
+          expectedPath: err.expectedPath || null,
+          sampleContent: err.sampleContent || '',
         });
         res.writeHead(statusCode, {
           'Content-Type': 'application/json; charset=utf-8',
