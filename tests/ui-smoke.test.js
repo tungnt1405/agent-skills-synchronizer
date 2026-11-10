@@ -20,7 +20,13 @@ const path = require('node:path');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 const { executeSyncBatch, checkAgentInstalled, buildDiffRows, normalizeRelativePath } = require('../tools/sync-executor.js');
-const { mergeMatchingFile, createNewFile, buildTargetReferenceSyncPrompt } = require('../tools/ai-merge-engine.js');
+const {
+  mergeMatchingFile,
+  createNewFile,
+  listPromptTemplates,
+  readPromptTemplate,
+  composePromptTemplate
+} = require('../tools/ai-merge-engine.js');
 const { AGENT_CATALOG, discoverAgentCapabilities, validateAiEngineSelection, runAgentMerge, resolveEnvironmentSandbox, MAX_AGENT_OUTPUT_BYTES, defaultRunProcess, ROOT_DIR: ADAPTER_ROOT_DIR } = require('../tools/agent-adapters.js');
 const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog } = require('../tools/skillsync-server.js');
 
@@ -173,13 +179,48 @@ async function main() {
     }
   });
 
+  runTest('UI chết: sidebar, quick search, telemetry badge, avatar đã bị xóa', () => {
+    for (const deadId of [
+      'id="sidebar"',
+      'id="sidebar-backdrop"',
+      'id="btn-sidebar-toggle"',
+      'id="quick-command-input"',
+      'id="quick-search-trigger"',
+      'id="search-shortcut-badge"'
+    ]) {
+      if (indexHtmlContent.includes(deadId)) {
+        throw new Error(`UI chết vẫn còn trong index.html: ${deadId}`);
+      }
+    }
+    if (indexHtmlContent.includes('TELEMETRY OK')) {
+      throw new Error('Telemetry badge giả vẫn còn trong index.html');
+    }
+    if (indexHtmlContent.includes('User Profile: System Architect')) {
+      throw new Error('Avatar giả vẫn còn trong index.html');
+    }
+  });
+
+  runTest('UI chết: 5 nav không còn trong index.html', () => {
+    for (const deadNav of [
+      'nav-item-matrix',
+      'nav-item-taxonomies',
+      'nav-item-telemetry',
+      'nav-item-pipelines',
+      'nav-item-audit'
+    ]) {
+      if (indexHtmlContent.includes(deadNav)) {
+        throw new Error(`Nav chết vẫn còn: ${deadNav}`);
+      }
+    }
+  });
+
   runTest('Modal Container chính: #modal-container tồn tại trong index.html', () => {
     if (!indexHtmlContent.includes('id="modal-container"')) {
       throw new Error('Thiếu phần tử container #modal-container trong index.html');
     }
   });
 
-  // 3.2: 4 Modals inside #modal-container
+  // 3.2: Modals inside #modal-container
   const modalContainerStart = indexHtmlContent.indexOf('id="modal-container"');
   if (modalContainerStart === -1) {
     throw new Error('Không tìm thấy #modal-container để kiểm tra các modal con');
@@ -192,9 +233,24 @@ async function main() {
     }
   });
 
-  runTest('Modal 2: #modal-conflict tồn tại bên trong #modal-container', () => {
-    if (!modalSection.includes('id="modal-conflict"')) {
-      throw new Error('Thiếu modal #modal-conflict bên trong #modal-container');
+  runTest('Modal 2: #modal-conflict đã được xóa khỏi #modal-container', () => {
+    if (modalSection.includes('id="modal-conflict"')) {
+      throw new Error('#modal-conflict phải bị xóa khỏi #modal-container');
+    }
+  });
+
+  runTest('Modal 1: #select-prompt-template tồn tại trong Confirmation Modal', () => {
+    if (!modalSection.includes('id="select-prompt-template"')) {
+      throw new Error('Thiếu #select-prompt-template trong #modal-confirm');
+    }
+    if (!modalSection.includes('id="prompt-template-help"')) {
+      throw new Error('Thiếu #prompt-template-help trong #modal-confirm');
+    }
+  });
+
+  runTest('Modal 4: #btn-copy-failure-template tồn tại trong Failure Modal', () => {
+    if (!modalSection.includes('id="btn-copy-failure-template"')) {
+      throw new Error('Thiếu #btn-copy-failure-template trong #modal-failure');
     }
   });
 
@@ -306,24 +362,6 @@ async function main() {
       desc: 'Nút Xem chi tiết diff (chuyển sang Diff Inspector)',
       source: workstationContent,
       sourceName: 'assets/js/views/workstation.js'
-    },
-    {
-      id: '#quick-command-input',
-      desc: 'Thanh tìm kiếm lệnh nhanh Ctrl+K / ⌘K',
-      source: indexHtmlContent,
-      sourceName: 'index.html'
-    },
-    {
-      id: '#btn-sidebar-toggle',
-      desc: 'Nút toggle menu hamburger cho mobile',
-      source: indexHtmlContent,
-      sourceName: 'index.html'
-    },
-    {
-      id: '#sidebar-backdrop',
-      desc: 'Backdrop overlay làm mờ cho mobile drawer',
-      source: indexHtmlContent,
-      sourceName: 'index.html'
     },
     {
       id: '#btn-apply-merge',
@@ -1193,37 +1231,69 @@ async function main() {
       throw new Error('conflictPoints của file mới phải là mảng rỗng');
     }
 
-    const prompt = buildTargetReferenceSyncPrompt([
-      { targetPath: 'skills/test.md', referencePath: 'skills/test.md' }
-    ]);
+  });
 
-    assert.ok(prompt.includes('<CRITICAL_DIRECTIVE>'), 'buildTargetReferenceSyncPrompt phải chứa thẻ <CRITICAL_DIRECTIVE>');
-    assert.ok(prompt.includes('PURE IN-MEMORY TEXT MERGE'), 'buildTargetReferenceSyncPrompt phải tuyên bố chế độ PURE IN-MEMORY TEXT MERGE');
+  await runAsyncTest('8.1b default.md tồn tại, giữ prompt cũ và đủ 4 placeholder', async () => {
+    const templates = await listPromptTemplates();
+    const defaultTemplate = templates.find((template) => template.id === 'default');
+    if (!defaultTemplate) {
+      throw new Error('Thiếu template default trong templates/prompt');
+    }
 
-    if (typeof prompt !== 'string' || !prompt.includes('target-reference-file-sync')) {
-      throw new Error('buildTargetReferenceSyncPrompt không sinh ra prompt chứa target-reference-file-sync');
+    const loaded = await readPromptTemplate('default');
+    for (const placeholder of [
+      '{{TARGET_PATH}}',
+      '{{REFERENCE_PATH}}',
+      '{{TARGET_CONTENT}}',
+      '{{REFERENCE_CONTENT}}'
+    ]) {
+      if (!loaded.text.includes(placeholder)) {
+        throw new Error(`default.md thiếu placeholder ${placeholder}`);
+      }
     }
-    if (!prompt.includes('Target: skills/test.md ↔ Reference: skills/test.md')) {
-      throw new Error('buildTargetReferenceSyncPrompt không liệt kê đúng cặp target ↔ reference');
+
+    for (const expected of [
+      '<CRITICAL_DIRECTIVE>',
+      'PURE IN-MEMORY TEXT MERGE',
+      'target-reference-file-sync',
+      'QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ',
+      'Kế thừa Cấu trúc Mở rộng',
+      'Bảo toàn Định danh Dự án',
+      'Phạm vi So sánh Khép kín',
+      'Không thêm bất kỳ nội dung linh tinh nào vào file',
+      'Backup trước khi sửa'
+    ]) {
+      if (!loaded.text.includes(expected)) {
+        throw new Error(`default.md thiếu nội dung: ${expected}`);
+      }
     }
-    if (!prompt.includes('QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu QUY TẮC ĐẶC BIỆT DÀNH CHO CẤU TRÚC VÀ TỪ NGỮ');
+  });
+
+  await runAsyncTest('8.1c readPromptTemplate chặn path traversal', async () => {
+    let thrown = null;
+    try {
+      await readPromptTemplate('../package.json');
+    } catch (err) {
+      thrown = err;
     }
-    if (!prompt.includes('Kế thừa Cấu trúc Mở rộng')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Kế thừa Cấu trúc Mở rộng');
+    if (!thrown) {
+      throw new Error('readPromptTemplate phải throw với id ../package.json');
     }
-    if (!prompt.includes('Bảo toàn Định danh Dự án')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Bảo toàn Định danh Dự án');
+    if (thrown.code !== 'TEMPLATE_INVALID') {
+      throw new Error(`code phải là TEMPLATE_INVALID, nhận: ${thrown.code}`);
     }
-    if (!prompt.includes('Phạm vi So sánh Khép kín') || !prompt.includes('CHỈ SO SÁNH TRỰC TIẾP GIỮA 2 FILE')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc Phạm vi So sánh Khép kín (Strict Scope)');
-    }
-    if (!prompt.includes('Không thêm bất kỳ nội dung linh tinh nào vào file')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu quy tắc cấm thêm nội dung linh tinh vào file');
-    }
-    if (!prompt.includes('Backup trước khi sửa')) {
-      throw new Error('buildTargetReferenceSyncPrompt thiếu chỉ dẫn backup bắt buộc');
-    }
+  });
+
+  runTest('8.1d composePromptTemplate thay placeholder một lượt', () => {
+    const output = composePromptTemplate('A {{TARGET_CONTENT}} B {{REFERENCE_CONTENT}}', {
+      TARGET_CONTENT: 'x $& {{TARGET_CONTENT}}',
+      REFERENCE_CONTENT: 'ref $1'
+    });
+    assert.strictEqual(
+      output,
+      'A x $& {{TARGET_CONTENT}} B ref $1',
+      'Không được replace đệ quy hoặc diễn giải $&/$1 trong nội dung'
+    );
   });
 
   runTest('8.2 checkAgentInstalled kiểm tra agent CLI', () => {
@@ -1324,6 +1394,61 @@ async function main() {
       const targetNewContent = await fs.promises.readFile(targetNewPath, 'utf8');
       if (targetNewContent !== referenceNewContent) {
         throw new Error(`Target new file có nội dung không khớp:\nMong muốn: ${referenceNewContent}\nNhận được: ${targetNewContent}`);
+      }
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('8.3b executeSyncBatch dừng trước backup khi template thiếu', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-template-missing');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession-missing-template';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+      await fs.promises.writeFile(path.join(sourcesDir, 'target', 'skills', 'a.md'), 'target-content', 'utf8');
+      await fs.promises.writeFile(path.join(sourcesDir, 'reference', 'skills', 'a.md'), 'reference-content', 'utf8');
+
+      let thrown = null;
+      try {
+        await executeSyncBatch({
+          syncSessionId,
+          templateId: 'does-not-exist',
+          targetSource: { repo: 'target' },
+          referenceSource: { repo: 'reference' },
+          matchingFiles: [{ path: 'skills/a.md' }],
+          newFiles: []
+        }, {
+          sourcesDir,
+          backupRoot,
+          skipAgentCheck: true
+        });
+      } catch (err) {
+        thrown = err;
+      }
+
+      if (!thrown) {
+        throw new Error('executeSyncBatch phải throw khi template không tồn tại');
+      }
+      if (thrown.code !== 'TEMPLATE_MISSING') {
+        throw new Error(`code phải là TEMPLATE_MISSING, nhận: ${thrown.code}`);
+      }
+      if (thrown.statusCode !== 422) {
+        throw new Error(`statusCode phải là 422, nhận: ${thrown.statusCode}`);
+      }
+      if (!thrown.expectedPath || !thrown.sampleContent) {
+        throw new Error('Lỗi template phải có expectedPath và sampleContent');
+      }
+      if (fs.existsSync(path.join(backupRoot, syncSessionId))) {
+        throw new Error('Không được tạo backup khi template thiếu');
+      }
+      const targetContent = await fs.promises.readFile(path.join(sourcesDir, 'target', 'skills', 'a.md'), 'utf8');
+      if (targetContent !== 'target-content') {
+        throw new Error(`Target không được thay đổi, nhận: ${targetContent}`);
       }
     } finally {
       await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
@@ -2597,6 +2722,72 @@ async function main() {
     }
   });
 
+  await runAsyncTest('13.2b GET /api/templates trả danh sách và sample khi rỗng', async () => {
+    const req = createMockReq({ method: 'GET', url: '/api/templates' });
+    const res = createMockRes();
+    const handled = await handleApi(req, res, undefined, {
+      listPromptTemplates: async () => [
+        { id: 'default', label: 'default', fileName: 'default.md' }
+      ]
+    });
+    assert.strictEqual(handled, true);
+    assert.strictEqual(res.statusCode, 200);
+    const data = JSON.parse(res.body);
+    assert.strictEqual(data.templates.length, 1);
+    assert.strictEqual(data.templates[0].id, 'default');
+    assert.strictEqual(data.expectedPath, 'templates/prompt/default.md');
+
+    const emptyReq = createMockReq({ method: 'GET', url: '/api/templates' });
+    const emptyRes = createMockRes();
+    await handleApi(emptyReq, emptyRes, undefined, {
+      listPromptTemplates: async () => [],
+      samplePromptTemplate: 'Target: {{TARGET_PATH}} Reference: {{REFERENCE_CONTENT}}'
+    });
+    const emptyData = JSON.parse(emptyRes.body);
+    assert.deepStrictEqual(emptyData.templates, []);
+    assert.ok(emptyData.sampleContent.includes('{{REFERENCE_CONTENT}}'));
+
+    const headReq = createMockReq({ method: 'HEAD', url: '/api/templates' });
+    const headRes = createMockRes();
+    await handleApi(headReq, headRes, undefined, {
+      listPromptTemplates: async () => []
+    });
+    assert.strictEqual(headRes.statusCode, 200);
+    assert.strictEqual(headRes.body, '');
+
+    const postReq = createMockReq({ method: 'POST', url: '/api/templates' });
+    const postRes = createMockRes();
+    let postError = null;
+    try {
+      await handleApi(postReq, postRes);
+    } catch (err) {
+      postError = err;
+    }
+    const postStatus = postRes.statusCode === 405 ? 405 : postError?.statusCode;
+    assert.strictEqual(postStatus, 405);
+  });
+
+  await runAsyncTest('13.2c fetchPromptTemplates gọi đúng endpoint và trả metadata', async () => {
+    const sourceApi = await import(`../assets/js/source-api.js?prompt-templates=${Date.now()}`);
+    let calledUrl = '';
+    const result = await sourceApi.fetchPromptTemplates(async (url) => {
+      calledUrl = url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          templates: [{ id: 'default', label: 'default', fileName: 'default.md' }],
+          directory: 'templates/prompt',
+          expectedPath: 'templates/prompt/default.md',
+          sampleContent: ''
+        })
+      };
+    });
+    assert.strictEqual(calledUrl, '/api/templates');
+    assert.strictEqual(result.templates[0].id, 'default');
+    assert.strictEqual(result.expectedPath, 'templates/prompt/default.md');
+  });
+
   await runAsyncTest('13.3 executeSyncBatch rejects forged Provider before backup or write', async () => {
     const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-13-3');
     const sourcesDir = path.join(tmpFixtureRoot, 'sources');
@@ -3683,6 +3874,46 @@ async function main() {
     );
   });
 
+  await runAsyncTest('14.7 store.loadPromptTemplates chọn default và gửi templateId khi execute', async () => {
+    const freshStoreModule = await import(`../assets/js/store.js?prompt-template=${Date.now()}`);
+    const store = freshStoreModule.appStore || freshStoreModule.default;
+
+    const templateFetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        templates: [{ id: 'default', label: 'default', fileName: 'default.md' }],
+        directory: 'templates/prompt',
+        expectedPath: 'templates/prompt/default.md'
+      })
+    });
+
+    await store.loadPromptTemplates(templateFetch);
+    assert.strictEqual(store.state.selectedTemplateId, 'default');
+    assert.strictEqual(store.state.promptTemplates.length, 1);
+
+    seedBatchFixture(store);
+    store.createPendingBatch();
+
+    let captured = null;
+    const fakeFetch = async (url, opts) => {
+      captured = JSON.parse(opts.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          syncSessionId: 'sess-template',
+          status: 'ready-for-review',
+          changedFiles: []
+        })
+      };
+    };
+
+    await store.executePendingBatch(fakeFetch);
+    assert.ok(captured, 'Payload phải được gửi');
+    assert.strictEqual(captured.templateId, 'default');
+  });
+
   // -------------------------------------------------------------
   // GROUP 15: Configurable AI Engine End-to-End Regressions (Phase 4)
   // -------------------------------------------------------------
@@ -4449,20 +4680,18 @@ async function main() {
   // -------------------------------------------------------------
   startGroup('Nhóm 17: Sync Execution Timeout & Defensive Directives (Fix ERR_AI_TIMEOUT)');
 
-  runTest('17.1 buildTargetReferenceSyncPrompt chứa <CRITICAL_DIRECTIVE> và cấm tool calls', () => {
-    const prompt = buildTargetReferenceSyncPrompt([
-      { targetPath: 'skills/sample.md', referencePath: 'skills/sample.md' }
-    ]);
+  await runAsyncTest('17.1 default.md chứa <CRITICAL_DIRECTIVE> và cấm tool calls', async () => {
+    const { text: prompt } = await readPromptTemplate('default');
     assert.ok(prompt.includes('<CRITICAL_DIRECTIVE>'), 'Prompt phải có thẻ mở <CRITICAL_DIRECTIVE>');
     assert.ok(prompt.includes('</CRITICAL_DIRECTIVE>'), 'Prompt phải có thẻ đóng </CRITICAL_DIRECTIVE>');
     assert.ok(prompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt phải ghi rõ PURE IN-MEMORY TEXT MERGE');
     assert.ok(prompt.includes('TUYỆT ĐỐI KHÔNG GỌI TOOL'), 'Prompt phải có chỉ thị cấm tuyệt đối gọi tool');
     assert.ok(prompt.includes('KHÔNG ĐỌC THÊM BẤT KỲ FILE NÀO KHÁC'), 'Prompt phải cấm đọc thêm file');
 
-    // Kiểm tra thêm trường hợp danh sách rỗng vẫn bảo tồn directive
-    const emptyPairsPrompt = buildTargetReferenceSyncPrompt([]);
-    assert.ok(emptyPairsPrompt.includes('<CRITICAL_DIRECTIVE>'), 'Prompt rỗng vẫn phải có <CRITICAL_DIRECTIVE>');
-    assert.ok(emptyPairsPrompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt rỗng vẫn phải có PURE IN-MEMORY TEXT MERGE');
+    // Ghép với giá trị rỗng vẫn bảo tồn directive
+    const emptyComposedPrompt = composePromptTemplate(prompt, {});
+    assert.ok(emptyComposedPrompt.includes('<CRITICAL_DIRECTIVE>'), 'Prompt rỗng vẫn phải có <CRITICAL_DIRECTIVE>');
+    assert.ok(emptyComposedPrompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt rỗng vẫn phải có PURE IN-MEMORY TEXT MERGE');
   });
 
   runTest('17.2 AGENT_CATALOG.agy.buildMergeArgs chứa cờ --disable-slash-commands', () => {

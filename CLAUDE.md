@@ -48,6 +48,7 @@ When synchronizing or comparing files between two repositories:
 │           ├── workstation.js   # Comparator Workstation UI (dual tree, folder selector)
 │           └── diff-inspector.js# Side-by-side Git Diff & Merge Inspector view
 ├── sources/                     # Local working directory for target & reference repositories
+├── templates/prompt/            # Prompt templates (default.md + custom .md)
 ├── tests/
 │   └── ui-smoke.test.js         # Automated end-to-end smoke & regression test suite
 ├── tools/
@@ -73,7 +74,7 @@ When synchronizing or comparing files between two repositories:
   - All user-supplied text or external file contents rendered into innerHTML MUST be sanitized using `escapeHtml()`.
   - Path inputs MUST be validated using `normalizeRelativePath()` to strictly prevent path traversal (`../`).
 - **Accessibility & UX**:
-  - Maintain WCAG 2.1 AA compliance: accessible color contrast, keyboard shortcuts (<kbd>Ctrl+K</kbd>, <kbd>Ctrl+Enter</kbd>, <kbd>Esc</kbd>), ARIA dialog attributes, and focus trapping within modals.
+  - Maintain WCAG 2.1 AA compliance: accessible color contrast, keyboard shortcuts (<kbd>Ctrl+Enter</kbd>, <kbd>Esc</kbd>), ARIA dialog attributes, and focus trapping within modals.
 - **Safety Policy Compliance**:
   - Respect repository policies: `policy.autoCommit: false` (leave commits for user confirmation), `policy.autoTest: false`.
   - Block dangerous shell commands (`rm -rf`, `chmod -R 777`).
