@@ -56,3 +56,6 @@ Desktop.ini
 coverage/
 .nyc_output/
 tests/.tmp*
+
+templates/prompt*
+!templates/prompt/default.md
