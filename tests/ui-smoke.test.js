@@ -27,7 +27,22 @@ const {
   readPromptTemplate,
   composePromptTemplate
 } = require('../tools/ai-merge-engine.js');
-const { AGENT_CATALOG, discoverAgentCapabilities, validateAiEngineSelection, runAgentMerge, resolveEnvironmentSandbox, MAX_AGENT_OUTPUT_BYTES, defaultRunProcess, ROOT_DIR: ADAPTER_ROOT_DIR } = require('../tools/agent-adapters.js');
+const {
+  AGENT_CATALOG,
+  discoverAgentCapabilities,
+  validateAiEngineSelection,
+  runAgentMerge,
+  resolveEnvironmentSandbox,
+  MAX_AGENT_OUTPUT_BYTES,
+  defaultRunProcess,
+  parseProbeModels,
+  parseAgyModels,
+  parseCodexModels,
+  parseOpencodeModels,
+  parseOpencodeOutput,
+  safeParseAgentOutput,
+  ROOT_DIR: ADAPTER_ROOT_DIR
+} = require('../tools/agent-adapters.js');
 const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog } = require('../tools/skillsync-server.js');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -4886,6 +4901,259 @@ async function main() {
       false,
       'executionOptions.disableSlashCommands phải được ghi đè thành false'
     );
+  });
+
+  // -------------------------------------------------------------
+  // GROUP 18: Multi-CLI Model Discovery & OpenCode
+  // -------------------------------------------------------------
+  startGroup('Nhóm 18: Multi-CLI Model Discovery & OpenCode');
+
+  runTest('18.1 parseCodexModels lọc hidden, lấy display_name, xóa ANSI', () => {
+    const ansi = '\x1b[32m';
+    const input = `${ansi}{"models":[`
+      + '{"slug":"dummy-visible-1","display_name":"Dummy Visible 1","visibility":"list"},'
+      + '{"slug":"dummy-hidden-1","display_name":"Dummy Hidden 1","visibility":"hide"},'
+      + '{"slug":"dummy-visible-2","visibility":"list"},'
+      + '{"display_name":"No Slug","visibility":"list"}'
+      + `]}${ansi}`;
+
+    const result = parseCodexModels(input);
+    assert.deepStrictEqual(
+      result.models.map((m) => m.id),
+      ['dummy-visible-1', 'dummy-visible-2'],
+      'Chỉ giữ model visible và có slug'
+    );
+    assert.strictEqual(result.models[0].label, 'Dummy Visible 1', 'Label lấy display_name');
+    assert.strictEqual(result.models[1].label, 'dummy-visible-2', 'Thiếu display_name thì label = slug');
+    assert.strictEqual(result.defaultModel, 'dummy-visible-1', 'defaultModel là model đầu tiên');
+    assert.strictEqual(result.modelSelection, 'available', 'Có model thì modelSelection = available');
+
+    assert.deepStrictEqual(
+      parseCodexModels('not-json'),
+      { models: [], defaultModel: null, modelSelection: 'agent-default' },
+      'JSON hỏng phải fallback agent-default'
+    );
+  });
+
+  runTest('18.2 parseOpencodeModels nhận provider/model, bỏ rác và ANSI', () => {
+    const input = '\x1b[36mmock-provider/dummy-model-1\x1b[0m\n'
+      + 'random banner line\n'
+      + 'mock-provider/dummy-model-2\n'
+      + 'mock-provider/dummy-model-2\n'
+      + '\n';
+
+    const result = parseOpencodeModels(input);
+    assert.deepStrictEqual(
+      result.models,
+      [
+        { id: 'mock-provider/dummy-model-1', label: 'mock-provider/dummy-model-1' },
+        { id: 'mock-provider/dummy-model-2', label: 'mock-provider/dummy-model-2' },
+        { id: 'mock-provider/dummy-model-2', label: 'mock-provider/dummy-model-2' }
+      ],
+      'Giữ đúng các dòng provider/model theo thứ tự'
+    );
+    assert.strictEqual(result.defaultModel, 'mock-provider/dummy-model-1');
+    assert.strictEqual(result.modelSelection, 'available');
+
+    assert.deepStrictEqual(
+      parseOpencodeModels('no valid model here\n'),
+      { models: [], defaultModel: null, modelSelection: 'agent-default' }
+    );
+  });
+
+  runTest('18.3 parseOpencodeOutput ghép text event, bỏ event khác, xử lý lỗi an toàn', () => {
+    const stdout = [
+      JSON.stringify({ type: 'step_start', part: { type: 'step-start' } }),
+      JSON.stringify({ type: 'text', part: { text: 'line1\n' } }),
+      JSON.stringify({ type: 'text', text: 'line2' }),
+      JSON.stringify({ type: 'step_finish', part: { type: 'step-finish' } })
+    ].join('\n');
+
+    assert.strictEqual(parseOpencodeOutput(stdout), 'line1\nline2', 'Ghép trực tiếp, không chèn \\n thừa');
+    assert.strictEqual(
+      parseOpencodeOutput(JSON.stringify({ type: 'step_finish' })),
+      '',
+      'Không có text event thì trả chuỗi rỗng'
+    );
+    assert.strictEqual(parseOpencodeOutput('not-json'), '', 'Dòng hỏng bị bỏ qua');
+
+    const safe = safeParseAgentOutput(
+      { parseOutput: () => { throw new Error('boom'); } },
+      'raw'
+    );
+    assert.strictEqual(safe.ok, false, 'parseOutput throw phải trả ok: false');
+    assert.strictEqual(safe.code, 'INVALID_AGENT_OUTPUT');
+    assert.ok(safe.error.includes('boom'), 'Lỗi phải giữ message gốc');
+
+    const passthrough = safeParseAgentOutput({}, 'raw-output');
+    assert.deepStrictEqual(passthrough, { ok: true, content: 'raw-output' }, 'Không có parseOutput thì passthrough');
+  });
+
+  runTest('18.4 Catalog args: agy sandbox, codex read-only, opencode yolo + JSON', () => {
+    assert.ok(AGENT_CATALOG.opencode, 'Catalog phải có opencode');
+    assert.strictEqual(AGENT_CATALOG.opencode.provider.id, 'opencode', 'Provider opencode phải là opencode');
+    assert.strictEqual(AGENT_CATALOG.opencode.binary, 'opencode', 'Binary phải là opencode');
+
+    assert.deepStrictEqual(
+      AGENT_CATALOG.agy.buildMergeArgs(),
+      ['--sandbox', '--dangerously-skip-permissions', '--disable-slash-commands']
+    );
+    assert.deepStrictEqual(
+      AGENT_CATALOG.agy.buildMergeArgs({ model: 'dummy-model' }),
+      ['--sandbox', '--dangerously-skip-permissions', '--disable-slash-commands', '--model', 'dummy-model']
+    );
+
+    assert.deepStrictEqual(AGENT_CATALOG.codex.buildMergeArgs(), ['exec', '-s', 'read-only']);
+    assert.deepStrictEqual(
+      AGENT_CATALOG.codex.buildMergeArgs({ model: 'dummy-model' }),
+      ['exec', '-s', 'read-only', '-m', 'dummy-model']
+    );
+
+    assert.deepStrictEqual(
+      AGENT_CATALOG.opencode.buildMergeArgs(),
+      ['run', '--format', 'json', '--auto']
+    );
+    assert.deepStrictEqual(
+      AGENT_CATALOG.opencode.buildMergeArgs({ model: 'mock-provider/dummy-model' }),
+      ['run', '--format', 'json', '--auto', '-m', 'mock-provider/dummy-model']
+    );
+  });
+
+  await runAsyncTest('18.5 discoverAgentCapabilities truyền timeout và phân nhánh đúng CLI', async () => {
+    const calls = [];
+    const fakeRunner = async (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      const joined = args.join(' ');
+
+      if (joined === '--version') {
+        return { exitCode: 0, stdout: `${cmd} 1.0.0\n` };
+      }
+      if (cmd === 'codex' && joined === 'debug models') {
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            models: [
+              { slug: 'dummy-visible-1', display_name: 'Dummy Visible 1', visibility: 'list' },
+              { slug: 'dummy-hidden-1', visibility: 'hide' }
+            ]
+          })
+        };
+      }
+      if (cmd === 'opencode' && joined === 'models') {
+        return { exitCode: 0, stdout: 'mock-provider/dummy-model-1\nmock-provider/dummy-model-2\n' };
+      }
+      return { exitCode: 1, stdout: '' };
+    };
+
+    const capabilities = await discoverAgentCapabilities({ runProcess: fakeRunner });
+
+    assert.ok(calls.length > 0, 'Phải gọi probe');
+    assert.ok(
+      calls.every((call) => call.opts && call.opts.timeout === 5000),
+      'Mọi probe phải nhận { timeout: 5000 }'
+    );
+
+    const codex = capabilities.agents.find((a) => a.id === 'codex');
+    assert.deepStrictEqual(codex.models.map((m) => m.id), ['dummy-visible-1']);
+    assert.strictEqual(codex.modelSelection, 'available');
+
+    const opencode = capabilities.agents.find((a) => a.id === 'opencode');
+    assert.deepStrictEqual(
+      opencode.models.map((m) => m.id),
+      ['mock-provider/dummy-model-1', 'mock-provider/dummy-model-2']
+    );
+    assert.strictEqual(opencode.modelSelection, 'available');
+
+    const claude = capabilities.agents.find((a) => a.id === 'claude');
+    assert.strictEqual(claude.modelSelection, 'agent-default', 'claude fallback agent-default');
+    assert.deepStrictEqual(claude.models, []);
+
+    const copilot = capabilities.agents.find((a) => a.id === 'copilot');
+    assert.strictEqual(copilot.modelSelection, 'agent-default', 'copilot fallback agent-default');
+  });
+
+  await runAsyncTest('18.6 runAgentMerge opencode: JSONL -> content sạch, không text -> lỗi', async () => {
+    const jsonl = [
+      JSON.stringify({ type: 'text', part: { text: 'line1\n' } }),
+      JSON.stringify({ type: 'text', text: 'line2' })
+    ].join('\n');
+
+    const okResult = await runAgentMerge({
+      agent: 'opencode',
+      provider: 'opencode',
+      model: 'mock-provider/dummy-model-1',
+      prompt: 'merge',
+      sandbox: { available: false },
+      runProcess: async () => ({ exitCode: 0, stdout: jsonl })
+    });
+
+    assert.strictEqual(okResult.ok, true, 'Merge phải thành công');
+    assert.strictEqual(okResult.content, 'line1\nline2', 'Content chỉ gồm text events');
+    assert.strictEqual(okResult.engineName, 'opencode');
+
+    const emptyResult = await runAgentMerge({
+      agent: 'opencode',
+      provider: 'opencode',
+      model: 'mock-provider/dummy-model-1',
+      prompt: 'merge',
+      sandbox: { available: false },
+      runProcess: async () => ({
+        exitCode: 0,
+        stdout: JSON.stringify({ type: 'step_finish', part: { type: 'step-finish' } })
+      })
+    });
+
+    assert.strictEqual(emptyResult.ok, false, 'Không có text event phải lỗi');
+    assert.strictEqual(emptyResult.code, 'INVALID_AGENT_OUTPUT');
+
+    let capturedArgs = null;
+    await runAgentMerge({
+      agent: 'opencode',
+      provider: 'opencode',
+      model: 'mock-provider/dummy-model-1',
+      prompt: 'merge',
+      sandbox: { available: false },
+      runProcess: async (cmd, args) => {
+        capturedArgs = args;
+        return { exitCode: 0, stdout: jsonl };
+      }
+    });
+    assert.ok(capturedArgs.includes('--auto'), 'Merge opencode phải có --auto');
+    assert.ok(capturedArgs.includes('--format'), 'Merge opencode phải có --format');
+    assert.ok(capturedArgs.includes('json'), 'Merge opencode phải có json');
+    assert.deepStrictEqual(
+      capturedArgs.slice(capturedArgs.indexOf('-m'), capturedArgs.indexOf('-m') + 2),
+      ['-m', 'mock-provider/dummy-model-1']
+    );
+  });
+
+  runTest('18.7 validateAiEngineSelection chấp nhận provider/model, chặn dạng nguy hiểm', () => {
+    const capabilities = {
+      agents: [
+        {
+          id: 'opencode',
+          provider: { id: 'opencode' },
+          installed: true,
+          models: [],
+          modelSelection: 'agent-default'
+        }
+      ]
+    };
+
+    const valid = validateAiEngineSelection(
+      { agent: 'opencode', provider: 'opencode', model: 'mock-provider/dummy-model' },
+      capabilities
+    );
+    assert.strictEqual(valid.ok, true, 'provider/model phải hợp lệ');
+
+    for (const badModel of ['-bad-flag', 'a//b', 'trailing/', 'has space', 'semi;colon']) {
+      const result = validateAiEngineSelection(
+        { agent: 'opencode', provider: 'opencode', model: badModel },
+        capabilities
+      );
+      assert.strictEqual(result.ok, false, `Phải chặn model: ${badModel}`);
+      assert.strictEqual(result.code, 'INVALID_AI_ENGINE_SELECTION');
+    }
   });
 
   // -------------------------------------------------------------
