@@ -13,6 +13,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const MAX_AGENT_OUTPUT_BYTES = 5 * 1024 * 1024; // 5MB
+const PROBE_TIMEOUT_MS = 5000;
 
 /**
  * Parse probe output to discover available models.
@@ -134,6 +135,146 @@ function extractVersion(output) {
 }
 
 /**
+ * Strip ANSI CSI escape sequences from CLI output.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function stripAnsi(value) {
+  return typeof value === 'string'
+    ? value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+    : '';
+}
+
+/**
+ * Parse Codex model catalog JSON (`codex debug models`).
+ * Drops hidden models and entries without a slug.
+ *
+ * @param {string} output
+ * @returns {{
+ *   models: Array<{ id: string, label: string }>,
+ *   defaultModel: string | null,
+ *   modelSelection: 'available' | 'agent-default'
+ * }}
+ */
+function parseCodexModels(output) {
+  const empty = { models: [], defaultModel: null, modelSelection: 'agent-default' };
+  if (typeof output !== 'string') return empty;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(stripAnsi(output).trim());
+  } catch {
+    return empty;
+  }
+
+  if (!Array.isArray(parsed?.models)) return empty;
+
+  const models = [];
+  for (const item of parsed.models) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.visibility === 'hide') continue;
+
+    const id = typeof item.slug === 'string' ? item.slug.trim() : '';
+    if (!id) continue;
+
+    const label = typeof item.display_name === 'string' && item.display_name.trim()
+      ? item.display_name.trim()
+      : id;
+
+    models.push({ id, label });
+  }
+
+  if (models.length === 0) return empty;
+
+  return { models, defaultModel: models[0].id, modelSelection: 'available' };
+}
+
+/**
+ * Parse OpenCode model list (`opencode models`), one `provider/model` per line.
+ *
+ * @param {string} output
+ * @returns {{
+ *   models: Array<{ id: string, label: string }>,
+ *   defaultModel: string | null,
+ *   modelSelection: 'available' | 'agent-default'
+ * }}
+ */
+function parseOpencodeModels(output) {
+  const empty = { models: [], defaultModel: null, modelSelection: 'agent-default' };
+  if (typeof output !== 'string') return empty;
+
+  const linePattern = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._:-]+$/;
+  const models = [];
+  for (const raw of stripAnsi(output).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || !linePattern.test(line)) continue;
+    models.push({ id: line, label: line });
+  }
+
+  if (models.length === 0) return empty;
+
+  return { models, defaultModel: models[0].id, modelSelection: 'available' };
+}
+
+/**
+ * Extract assistant text from OpenCode JSONL events (`--format json`).
+ * Joins streamed text chunks without inserting extra newlines.
+ *
+ * @param {string} stdout
+ * @returns {string}
+ */
+function parseOpencodeOutput(stdout) {
+  if (typeof stdout !== 'string') return '';
+
+  const chunks = [];
+  for (const raw of stripAnsi(stdout).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    if (!event || event.type !== 'text') continue;
+
+    const text = typeof event.part?.text === 'string'
+      ? event.part.text
+      : (typeof event.text === 'string' ? event.text : '');
+    if (text) chunks.push(text);
+  }
+
+  return chunks.join('');
+}
+
+/**
+ * Apply an adapter's optional parseOutput hook with defensive error handling.
+ *
+ * @param {object} adapter
+ * @param {string} rawStdout
+ * @returns {{ ok: true, content: string } | { ok: false, code: 'INVALID_AGENT_OUTPUT', error: string }}
+ */
+function safeParseAgentOutput(adapter, rawStdout) {
+  if (!adapter || typeof adapter.parseOutput !== 'function') {
+    return { ok: true, content: rawStdout };
+  }
+
+  try {
+    const parsed = adapter.parseOutput(rawStdout);
+    return { ok: true, content: typeof parsed === 'string' ? parsed : '' };
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'INVALID_AGENT_OUTPUT',
+      error: `Failed to parse agent output: ${err.message || String(err)}`
+    };
+  }
+}
+
+/**
  * Server-owned Agent Catalog with fixed Provider definitions and non-interactive arguments.
  */
 const AGENT_CATALOG = Object.freeze({
@@ -156,7 +297,7 @@ const AGENT_CATALOG = Object.freeze({
     versionArgs: Object.freeze(['--version']),
     modelArgs: Object.freeze(['models']),
     buildMergeArgs: ({ model, disableSlashCommands = true } = {}) => {
-      const args = ['--dangerously-skip-permissions'];
+      const args = ['--sandbox', '--dangerously-skip-permissions'];
       if (disableSlashCommands) {
         args.push('--disable-slash-commands');
       }
@@ -188,10 +329,28 @@ const AGENT_CATALOG = Object.freeze({
     binary: 'codex',
     provider: Object.freeze({ id: 'codex', label: 'OpenAI Codex' }),
     versionArgs: Object.freeze(['--version']),
+    modelArgs: Object.freeze(['debug', 'models']),
     buildMergeArgs: ({ model } = {}) => (model
-      ? ['exec', '-m', model]
-      : ['exec']),
-    discoverModels: parseProbeModels
+      ? ['exec', '-s', 'read-only', '-m', model]
+      : ['exec', '-s', 'read-only']),
+    discoverModels: parseCodexModels
+  }),
+  opencode: Object.freeze({
+    id: 'opencode',
+    label: 'OpenCode CLI',
+    binary: 'opencode',
+    provider: Object.freeze({ id: 'opencode', label: 'OpenCode' }),
+    versionArgs: Object.freeze(['--version']),
+    modelArgs: Object.freeze(['models']),
+    buildMergeArgs: ({ model } = {}) => {
+      const args = ['run', '--format', 'json', '--auto'];
+      if (model) {
+        args.push('-m', model);
+      }
+      return args;
+    },
+    discoverModels: parseOpencodeModels,
+    parseOutput: parseOpencodeOutput
   })
 });
 
@@ -445,7 +604,7 @@ async function discoverAgentCapabilities({ runProcess } = {}) {
 
   for (const entry of Object.values(AGENT_CATALOG)) {
     try {
-      const res = await runner(entry.binary, [...entry.versionArgs]);
+      const res = await runner(entry.binary, [...entry.versionArgs], { timeout: PROBE_TIMEOUT_MS });
       const exitCode = res?.exitCode ?? res?.status ?? res?.code ?? (res?.error ? 1 : 0);
       const isSuccess = (exitCode === 0 || exitCode === '0') && !res?.error;
       const stdout = typeof res?.stdout === 'string' ? res.stdout : '';
@@ -456,7 +615,7 @@ async function discoverAgentCapabilities({ runProcess } = {}) {
         // 1. If agent documents dedicated model listing command (e.g. `agy models`), execute it
         if (Array.isArray(entry.modelArgs) && entry.modelArgs.length > 0) {
           try {
-            const modelRes = await runner(entry.binary, [...entry.modelArgs]);
+            const modelRes = await runner(entry.binary, [...entry.modelArgs], { timeout: PROBE_TIMEOUT_MS });
             const modelExitCode = modelRes?.exitCode ?? modelRes?.status ?? modelRes?.code ?? (modelRes?.error ? 1 : 0);
             const modelStdout = typeof modelRes?.stdout === 'string' ? modelRes.stdout : '';
             if ((modelExitCode === 0 || modelExitCode === '0') && !modelRes?.error && modelStdout.trim().length > 0) {
@@ -602,8 +761,13 @@ function validateAiEngineSelection(selection, capabilities) {
     // When modelSelection === 'agent-default', if selection.model is provided and non-empty, validate format
     if (selection.model !== undefined && selection.model !== null && selection.model !== '') {
       const modelName = String(selection.model);
-      const validFormat = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,63}$/;
-      if (modelName.startsWith('-') || !validFormat.test(modelName)) {
+      const validFormat = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
+      if (
+        modelName.startsWith('-') ||
+        modelName.includes('//') ||
+        modelName.endsWith('/') ||
+        !validFormat.test(modelName)
+      ) {
         return {
           ok: false,
           code: 'INVALID_AI_ENGINE_SELECTION',
@@ -837,7 +1001,15 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       };
     }
 
-    const content = Buffer.from(rawStdout.replace(/\0/g, ''), 'utf8').toString('utf8');
+    const parsedOutput = safeParseAgentOutput(adapter, rawStdout);
+    if (!parsedOutput.ok) {
+      return parsedOutput;
+    }
+
+    const content = Buffer.from(
+      parsedOutput.content.replace(/\0/g, ''),
+      'utf8'
+    ).toString('utf8');
     if (content.trim().length === 0) {
       return {
         ok: false,
@@ -865,6 +1037,7 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
 
 module.exports = {
   MAX_AGENT_OUTPUT_BYTES,
+  PROBE_TIMEOUT_MS,
   AGENT_CATALOG,
   discoverAgentCapabilities,
   validateAiEngineSelection,
@@ -874,5 +1047,9 @@ module.exports = {
   defaultRunProcess,
   parseProbeModels,
   parseAgyModels,
+  parseCodexModels,
+  parseOpencodeModels,
+  parseOpencodeOutput,
+  safeParseAgentOutput,
   ROOT_DIR
 };
