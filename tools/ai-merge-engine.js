@@ -17,7 +17,7 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const PROMPT_TEMPLATES_DIR = path.join(ROOT_DIR, 'templates', 'prompt');
 const MAX_TEMPLATE_BYTES = 256 * 1024;
 const TEMPLATE_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const TEMPLATE_PLACEHOLDER_PATTERN = /\{\{(TARGET_PATH|REFERENCE_PATH|TARGET_CONTENT|REFERENCE_CONTENT)\}\}/g;
+const TEMPLATE_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z0-9_-]+)\s*\}\}/g;
 
 /**
  * Minimal prompt skeleton shown only when a template is missing or invalid.
@@ -143,9 +143,6 @@ async function readPromptTemplate(templateId) {
   if (!text.trim()) {
     throw createTemplateError('TEMPLATE_INVALID', id, `Prompt template is empty: ${fileName}`);
   }
-  if (!text.includes('{{REFERENCE_CONTENT}}')) {
-    throw createTemplateError('TEMPLATE_INVALID', id, `Prompt template is missing {{REFERENCE_CONTENT}}: ${fileName}`);
-  }
 
   return { id, fileName, text };
 }
@@ -161,9 +158,16 @@ function composePromptTemplate(templateText, values = {}) {
     throw new TypeError('templateText must be a string');
   }
   const safeValues = values && typeof values === 'object' ? values : {};
-  return templateText.replace(TEMPLATE_PLACEHOLDER_PATTERN, (_, key) => {
-    const value = safeValues[key];
-    return String(value === null || value === undefined ? '' : value);
+  return templateText.replace(TEMPLATE_PLACEHOLDER_PATTERN, (match, key) => {
+    const cleanKey = key.trim();
+    if (Object.prototype.hasOwnProperty.call(safeValues, cleanKey)) {
+      const value = safeValues[cleanKey];
+      return String(value === null || value === undefined ? '' : value);
+    }
+    if (cleanKey === 'LANGUAGE') {
+      return 'English';
+    }
+    return match;
   });
 }
 

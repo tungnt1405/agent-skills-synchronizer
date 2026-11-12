@@ -59,3 +59,4 @@ tests/.tmp*
 
 templates/prompt*
 !templates/prompt/default.md
+setting.json

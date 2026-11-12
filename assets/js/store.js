@@ -18,6 +18,7 @@ export const EXECUTOR_STEPS = ['prepare', 'preflight', 'backup', 'analyze', 'wri
 
 export const AGENT_STORAGE_KEY = 'skillsync.executor.agent';
 export const MODEL_STORAGE_KEY = 'skillsync.executor.model';
+export const LANGUAGE_STORAGE_KEY = 'skillsync.prompt.language';
 
 function getStorageItem(key) {
   try {
@@ -481,6 +482,7 @@ class Store {
       promptTemplatesStatus: 'idle',
       selectedTemplateId: '',
       promptTemplateError: null,
+      promptLanguage: getStorageItem(LANGUAGE_STORAGE_KEY) || 'English',
       executorProvider: 'local-reference-merge-v1',
       activeSyncSession: null,
       executionStatus: 'idle',
@@ -961,6 +963,9 @@ class Store {
 
     const now = new Date().toISOString();
     const syncSessionId = cryptoRandomId();
+    const effectiveLanguage = (typeof this.state.promptLanguage === 'string' && this.state.promptLanguage.trim())
+      ? this.state.promptLanguage.trim()
+      : 'English';
     this.state.draftSavedAt = now;
     this.state.workflowState = 'selected-for-sync';
     this.state.lastBatchError = '';
@@ -972,6 +977,7 @@ class Store {
       matchingFiles: classification.matching,
       newFiles: classification.newFiles,
       ignoredFiles: classification.ignored,
+      language: effectiveLanguage,
       createdAt: now,
       draftSavedAt: now
     };
@@ -1187,6 +1193,23 @@ class Store {
   }
 
   /**
+   * Set output language for prompt template
+   * @param {string} language
+   */
+  setPromptLanguage(language) {
+    if (typeof language !== 'string') return;
+    this.state.promptLanguage = language;
+    const clean = language.trim();
+    if (clean) {
+      setStorageItem(LANGUAGE_STORAGE_KEY, clean);
+    }
+    if (this.state.pendingBatch) {
+      this.state.pendingBatch.language = clean || 'English';
+    }
+    this.notify();
+  }
+
+  /**
    * Check installation of current target AI agent
    * @param {Function} [fetchImpl]
    * @returns {Promise<object>}
@@ -1301,15 +1324,21 @@ class Store {
       ...(this.state.targetModel ? { model: this.state.targetModel } : {})
     };
 
+    const effectiveLanguage = (typeof this.state.promptLanguage === 'string' && this.state.promptLanguage.trim())
+      ? this.state.promptLanguage.trim()
+      : 'English';
+
     const payload = {
       ...this.state.pendingBatch,
       agent: this.state.targetAgent || 'local',
       aiEngine,
       templateId: this.state.selectedTemplateId || undefined,
+      language: effectiveLanguage,
       options: {
         createBackup: true,
         preserveTargetStructure: true,
-        referenceIsContentAuthority: true
+        referenceIsContentAuthority: true,
+        language: effectiveLanguage
       }
     };
 
@@ -1843,6 +1872,7 @@ if (typeof window !== 'undefined') {
   window.EXECUTOR_STEPS = EXECUTOR_STEPS;
   window.AGENT_STORAGE_KEY = AGENT_STORAGE_KEY;
   window.MODEL_STORAGE_KEY = MODEL_STORAGE_KEY;
+  window.LANGUAGE_STORAGE_KEY = LANGUAGE_STORAGE_KEY;
 }
 
 export default appStore;

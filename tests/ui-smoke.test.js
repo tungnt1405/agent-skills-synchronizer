@@ -43,7 +43,7 @@ const {
   safeParseAgentOutput,
   ROOT_DIR: ADAPTER_ROOT_DIR
 } = require('../tools/agent-adapters.js');
-const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog } = require('../tools/skillsync-server.js');
+const { buildPreviewDiff, buildPreviewDiffBatch, handleApi, createServer, sanitizePublicLog, HOST, serveStatic } = require('../tools/skillsync-server.js');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 
@@ -260,6 +260,18 @@ async function main() {
     }
     if (!modalSection.includes('id="prompt-template-help"')) {
       throw new Error('Thiếu #prompt-template-help trong #modal-confirm');
+    }
+  });
+
+  runTest('Modal 1: #input-prompt-language tồn tại trong Confirmation Modal với mặc định English', () => {
+    if (!modalSection.includes('id="input-prompt-language"')) {
+      throw new Error('Thiếu #input-prompt-language trong #modal-confirm');
+    }
+    if (!modalSection.includes('value="English"')) {
+      throw new Error('#input-prompt-language phải có giá trị mặc định là English');
+    }
+    if (!modalSection.includes('{{ LANGUAGE }}')) {
+      throw new Error('#modal-confirm phải hiển thị biến {{ LANGUAGE }}');
     }
   });
 
@@ -1311,6 +1323,46 @@ async function main() {
     );
   });
 
+  runTest('8.1e composePromptTemplate hỗ trợ {{ LANGUAGE }} và mặc định English', () => {
+    const customOutput = composePromptTemplate('Lang: {{ LANGUAGE }} and {{LANGUAGE}}', {
+      LANGUAGE: 'Tiếng Việt'
+    });
+    assert.strictEqual(
+      customOutput,
+      'Lang: Tiếng Việt and Tiếng Việt',
+      'composePromptTemplate phải thay thế biến LANGUAGE'
+    );
+
+    const defaultOutput = composePromptTemplate('Lang: {{ LANGUAGE }}', {});
+    assert.strictEqual(
+      defaultOutput,
+      'Lang: English',
+      'composePromptTemplate phải fallback về English khi không truyền LANGUAGE'
+    );
+  });
+
+  await runAsyncTest('8.1f readPromptTemplate không bắt buộc template phải có {{REFERENCE_CONTENT}}', async () => {
+    const tmpTestPath = path.join(__dirname, '..', 'templates', 'prompt', 'test_custom_no_ref.md');
+    try {
+      await fs.promises.writeFile(tmpTestPath, 'Target: {{TARGET_PATH}} Lang: {{LANGUAGE}}', 'utf8');
+      const loaded = await readPromptTemplate('test_custom_no_ref');
+      assert.ok(loaded.text.length > 0, 'test_custom_no_ref.md phải được đọc thành công');
+      assert.strictEqual(loaded.text.includes('{{REFERENCE_CONTENT}}'), false, 'template không chứa {{REFERENCE_CONTENT}}');
+      
+      const composed = composePromptTemplate(loaded.text, {
+        TARGET_PATH: 'skills/test/SKILL.md',
+        REFERENCE_PATH: 'skills/test/SKILL.md',
+        TARGET_CONTENT: 'target content',
+        REFERENCE_CONTENT: 'ref content',
+        LANGUAGE: 'Tiếng Việt'
+      });
+      assert.ok(composed.includes('skills/test/SKILL.md'), 'composePromptTemplate phải thay thế TARGET_PATH');
+      assert.ok(composed.includes('Tiếng Việt'), 'composePromptTemplate phải thay thế LANGUAGE');
+    } finally {
+      await fs.promises.rm(tmpTestPath, { force: true }).catch(() => {});
+    }
+  });
+
   runTest('8.2 checkAgentInstalled kiểm tra agent CLI', () => {
     const unknownAgent = checkAgentInstalled('unknown_agent_xyz');
     if (unknownAgent.ok !== false) {
@@ -1410,6 +1462,62 @@ async function main() {
       if (targetNewContent !== referenceNewContent) {
         throw new Error(`Target new file có nội dung không khớp:\nMong muốn: ${referenceNewContent}\nNhận được: ${targetNewContent}`);
       }
+    } finally {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  await runAsyncTest('8.3c executeSyncBatch xử lý an toàn khi newFiles đã tồn tại trong target: bỏ qua nếu đã mới nhất, merge nếu khác', async () => {
+    const tmpFixtureRoot = path.join(ROOT_DIR, 'tests', '.tmp-sync-executor-new-exists');
+    const sourcesDir = path.join(tmpFixtureRoot, 'sources');
+    const backupRoot = path.join(tmpFixtureRoot, 'backups');
+    const syncSessionId = 'testsession-new-exists';
+
+    try {
+      await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'target', 'skills'), { recursive: true });
+      await fs.promises.mkdir(path.join(sourcesDir, 'reference', 'skills'), { recursive: true });
+
+      const sameContent = '# File Already Latest\nIdentical Line';
+      const refDiffContent = '# Ref Content\nDifferent Line';
+      const targetOldContent = '# Target Content\nOld Line';
+
+      // 1. File identical in target and reference
+      await fs.promises.writeFile(path.join(sourcesDir, 'target', 'skills', 'identical.md'), sameContent, 'utf8');
+      await fs.promises.writeFile(path.join(sourcesDir, 'reference', 'skills', 'identical.md'), sameContent, 'utf8');
+
+      // 2. File exists in target but different from reference
+      await fs.promises.writeFile(path.join(sourcesDir, 'target', 'skills', 'different.md'), targetOldContent, 'utf8');
+      await fs.promises.writeFile(path.join(sourcesDir, 'reference', 'skills', 'different.md'), refDiffContent, 'utf8');
+
+      const batch = {
+        syncSessionId,
+        targetSource: { repo: 'target' },
+        referenceSource: { repo: 'reference' },
+        matchingFiles: [],
+        newFiles: [
+          { path: 'skills/identical.md' },
+          { path: 'skills/different.md' }
+        ]
+      };
+
+      const result = await executeSyncBatch(batch, {
+        sourcesDir,
+        backupRoot,
+        skipAgentCheck: true
+      });
+
+      assert.strictEqual(result.status, 'ready-for-review');
+      // identical.md was skipped, different.md was merged
+      assert.strictEqual(result.changedFiles.length, 1, 'Chỉ file có nội dung khác mới được ghi, file identical phải được bỏ qua');
+      assert.strictEqual(result.changedFiles[0].path, 'skills/different.md');
+      assert.strictEqual(result.changedFiles[0].kind, 'matching');
+
+      // Check backup created for different.md
+      const backupPath = path.join(backupRoot, syncSessionId, 'skills', 'different.md');
+      assert.ok(fs.existsSync(backupPath), 'File different.md phải có backup trước khi ghi đè');
+      const backupText = await fs.promises.readFile(backupPath, 'utf8');
+      assert.strictEqual(backupText, targetOldContent);
     } finally {
       await fs.promises.rm(tmpFixtureRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -2206,7 +2314,7 @@ async function main() {
     assert.strictEqual(AGENT_CATALOG['evil-cmd-injection'], undefined, 'Malicious agent ID không được tồn tại trong AGENT_CATALOG');
 
     const agyArgs = AGENT_CATALOG.agy.buildMergeArgs();
-    assert.ok(agyArgs.includes('--disable-slash-commands'), 'agy buildMergeArgs phải chứa cờ --disable-slash-commands');
+    assert.ok(!agyArgs.includes('--disable-slash-commands'), 'Mặc định agy buildMergeArgs không chứa cờ --disable-slash-commands');
     assert.ok(agyArgs.includes('--dangerously-skip-permissions'), 'agy buildMergeArgs phải chứa --dangerously-skip-permissions');
 
     // 2. validateAiEngineSelection từ chối unknown agent
@@ -2801,6 +2909,27 @@ async function main() {
     assert.strictEqual(calledUrl, '/api/templates');
     assert.strictEqual(result.templates[0].id, 'default');
     assert.strictEqual(result.expectedPath, 'templates/prompt/default.md');
+  });
+
+  await runAsyncTest('13.2d skillsync-server hỗ trợ HOST 0.0.0.0, CORS wildcard headers, và Cache-Control static', async () => {
+    assert.strictEqual(typeof HOST, 'string', 'HOST phải là chuỗi');
+    assert.strictEqual(HOST, process.env.SKILLSYNC_HOST || '0.0.0.0', 'HOST mặc định phải là 0.0.0.0 để máy host truy cập được vào WSL');
+
+    // Test CORS preflight on handleApi
+    const optionsReq = createMockReq({ method: 'OPTIONS', url: '/api/sync/execute' });
+    const optionsRes = createMockRes();
+    const handled = await handleApi(optionsReq, optionsRes);
+    assert.strictEqual(handled, true);
+    assert.strictEqual(optionsRes.statusCode, 204);
+    assert.strictEqual(optionsRes.headers['access-control-allow-headers'], '*');
+    assert.strictEqual(optionsRes.headers['access-control-allow-origin'], '*');
+
+    // Test Cache-Control on serveStatic
+    const staticReq = createMockReq({ method: 'GET', url: '/index.html' });
+    const staticRes = createMockRes();
+    await serveStatic(staticReq, staticRes);
+    assert.strictEqual(staticRes.statusCode, 200);
+    assert.ok(staticRes.headers['cache-control']?.includes('no-cache'), 'Phải có header Cache-Control: no-cache để tránh stale cache');
   });
 
   await runAsyncTest('13.3 executeSyncBatch rejects forged Provider before backup or write', async () => {
@@ -3927,6 +4056,12 @@ async function main() {
     await store.executePendingBatch(fakeFetch);
     assert.ok(captured, 'Payload phải được gửi');
     assert.strictEqual(captured.templateId, 'default');
+    assert.strictEqual(captured.language, 'English');
+
+    store.setPromptLanguage('Tiếng Việt');
+    await store.executePendingBatch(fakeFetch);
+    assert.strictEqual(captured.language, 'Tiếng Việt');
+    assert.strictEqual(store.state.pendingBatch.language, 'Tiếng Việt', 'pendingBatch.language phải được đồng bộ khi đổi language');
   });
 
   // -------------------------------------------------------------
@@ -4709,26 +4844,26 @@ async function main() {
     assert.ok(emptyComposedPrompt.includes('PURE IN-MEMORY TEXT MERGE'), 'Prompt rỗng vẫn phải có PURE IN-MEMORY TEXT MERGE');
   });
 
-  runTest('17.2 AGENT_CATALOG.agy.buildMergeArgs chứa cờ --disable-slash-commands', () => {
+  runTest('17.2 AGENT_CATALOG.agy.buildMergeArgs mặc định không chứa --disable-slash-commands', () => {
     assert.ok(AGENT_CATALOG.agy, 'AGENT_CATALOG phải chứa agy');
     assert.strictEqual(typeof AGENT_CATALOG.agy.buildMergeArgs, 'function', 'buildMergeArgs phải là function');
 
     // Default arguments
     const defaultArgs = AGENT_CATALOG.agy.buildMergeArgs();
-    assert.ok(defaultArgs.includes('--disable-slash-commands'), 'Mặc định buildMergeArgs phải có --disable-slash-commands');
+    assert.ok(!defaultArgs.includes('--disable-slash-commands'), 'Mặc định buildMergeArgs không được có --disable-slash-commands');
     assert.ok(defaultArgs.includes('--dangerously-skip-permissions'), 'buildMergeArgs phải có --dangerously-skip-permissions');
 
-    // When disableSlashCommands is explicitly false
-    const withoutSlashDisabled = AGENT_CATALOG.agy.buildMergeArgs({ disableSlashCommands: false });
-    assert.ok(!withoutSlashDisabled.includes('--disable-slash-commands'), 'Khi disableSlashCommands: false, args không được có --disable-slash-commands');
-    assert.ok(withoutSlashDisabled.includes('--dangerously-skip-permissions'), 'Vẫn phải có --dangerously-skip-permissions');
+    // When disableSlashCommands is explicitly true
+    const withSlashDisabled = AGENT_CATALOG.agy.buildMergeArgs({ disableSlashCommands: true });
+    assert.ok(withSlashDisabled.includes('--disable-slash-commands'), 'Khi disableSlashCommands: true, args phải có --disable-slash-commands');
+    assert.ok(withSlashDisabled.includes('--dangerously-skip-permissions'), 'Vẫn phải có --dangerously-skip-permissions');
 
     // Model argument handling
     const withModelArgs = AGENT_CATALOG.agy.buildMergeArgs({ model: 'gemini-2.5-pro' });
     assert.ok(withModelArgs.includes('--model'), 'Phải chứa cờ --model');
     const modelIndex = withModelArgs.indexOf('--model');
     assert.strictEqual(withModelArgs[modelIndex + 1], 'gemini-2.5-pro', 'Giá trị model phải đi liền sau cờ --model');
-    assert.ok(withModelArgs.includes('--disable-slash-commands'), 'Vẫn phải có cờ --disable-slash-commands khi truyền model');
+    assert.ok(!withModelArgs.includes('--disable-slash-commands'), 'Mặc định không có cờ --disable-slash-commands khi truyền model');
   });
 
   await runAsyncTest('17.3 defaultRunProcess khóa cwd mặc định vào ROOT_DIR', async () => {
@@ -4989,24 +5124,27 @@ async function main() {
     assert.deepStrictEqual(passthrough, { ok: true, content: 'raw-output' }, 'Không có parseOutput thì passthrough');
   });
 
-  runTest('18.4 Catalog args: agy sandbox, codex read-only, opencode yolo + JSON', () => {
+  runTest('18.4 Catalog args: agy & codex dangerously-skip/bypass permissions, opencode yolo + JSON', () => {
     assert.ok(AGENT_CATALOG.opencode, 'Catalog phải có opencode');
     assert.strictEqual(AGENT_CATALOG.opencode.provider.id, 'opencode', 'Provider opencode phải là opencode');
     assert.strictEqual(AGENT_CATALOG.opencode.binary, 'opencode', 'Binary phải là opencode');
 
     assert.deepStrictEqual(
       AGENT_CATALOG.agy.buildMergeArgs(),
-      ['--sandbox', '--dangerously-skip-permissions', '--disable-slash-commands']
+      ['--dangerously-skip-permissions']
     );
     assert.deepStrictEqual(
       AGENT_CATALOG.agy.buildMergeArgs({ model: 'dummy-model' }),
-      ['--sandbox', '--dangerously-skip-permissions', '--disable-slash-commands', '--model', 'dummy-model']
+      ['--dangerously-skip-permissions', '--model', 'dummy-model']
     );
 
-    assert.deepStrictEqual(AGENT_CATALOG.codex.buildMergeArgs(), ['exec', '-s', 'read-only']);
+    assert.deepStrictEqual(
+      AGENT_CATALOG.codex.buildMergeArgs(),
+      ['exec', '--dangerously-bypass-approvals-and-sandbox']
+    );
     assert.deepStrictEqual(
       AGENT_CATALOG.codex.buildMergeArgs({ model: 'dummy-model' }),
-      ['exec', '-s', 'read-only', '-m', 'dummy-model']
+      ['exec', '--dangerously-bypass-approvals-and-sandbox', '-m', 'dummy-model']
     );
 
     assert.deepStrictEqual(

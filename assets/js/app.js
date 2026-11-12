@@ -91,6 +91,10 @@ function updatePromptTemplateUI(state = {}) {
   const select = document.getElementById('select-prompt-template');
   const errorBox = document.getElementById('template-error');
   const proceedBtn = document.getElementById('btn-proceed-confirm');
+  const languageInput = document.getElementById('input-prompt-language');
+  if (languageInput && document.activeElement !== languageInput) {
+    languageInput.value = state.promptLanguage || 'English';
+  }
   if (!select || !errorBox || !proceedBtn) return;
 
   select.innerHTML = '';
@@ -661,6 +665,20 @@ export function initApp() {
   if (promptTemplateSelect) {
     promptTemplateSelect.addEventListener('change', () => {
       appStore.setSelectedTemplateId(promptTemplateSelect.value);
+    });
+  }
+
+  const promptLanguageInput = document.getElementById('input-prompt-language');
+  if (promptLanguageInput) {
+    promptLanguageInput.value = appStore.getState().promptLanguage || 'English';
+    promptLanguageInput.addEventListener('input', () => {
+      appStore.setPromptLanguage(promptLanguageInput.value);
+    });
+    promptLanguageInput.addEventListener('change', () => {
+      if (!promptLanguageInput.value.trim()) {
+        promptLanguageInput.value = 'English';
+        appStore.setPromptLanguage('English');
+      }
     });
   }
 

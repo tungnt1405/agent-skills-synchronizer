@@ -67,6 +67,11 @@ export async function fetchPromptTemplates(fetchImpl = fetch) {
   };
 }
 
+export async function fetchServerConfig(fetchImpl = fetch) {
+  const data = await readJson(await fetchImpl(`${API_BASE}/api/config`));
+  return data?.config || {};
+}
+
 export async function fetchSourceScan(target, reference, fetchImpl = fetch) {
   const params = new URLSearchParams({ target, reference });
   const data = await readJson(await fetchImpl(`${API_BASE}/api/scan?${params.toString()}`));

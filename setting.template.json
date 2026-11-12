@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$description": "File mẫu cấu hình tham số chung cho SkillSyncPro và tungnt-ai-skills. Sao chép thành setting.json để áp dụng.",
+  "agentSync": {
+    "defaultTimeoutMs": 600000,
+    "maxTimeoutMs": 1800000,
+    "defaultAgent": "agy",
+    "defaultModel": "",
+    "disableSlashCommands": false,
+    "createBackup": true,
+    "preserveTargetStructure": true,
+    "referenceIsContentAuthority": true
+  },
+  "server": {
+    "port": 4173,
+    "host": "localhost",
+    "sourcesDir": "sources",
+    "templatesDir": "templates/prompt",
+    "backupDir": ".skillsync/backups",
+    "logsDir": ".skillsync/logs"
+  },
+  "policy": {
+    "autoCommit": false,
+    "autoTest": false,
+    "hookDebug": false,
+    "dangerousCommands": {
+      "blocked": [
+        "rm -rf /",
+        "rm -rf *",
+        "mkfs",
+        "dd",
+        "chmod -R 777 /",
+        "chown -R"
+      ],
+      "askConfirmation": true
+    },
+    "sensitiveFiles": {
+      "blocked": [
+        "**/.env",
+        "**/*.pem",
+        "**/.ssh/id_*",
+        "**/secrets.json"
+      ],
+      "askConfirmation": true
+    },
+    "installAndUpdate": {
+      "askUser": true
+    }
+  }
+}

@@ -16,7 +16,8 @@ const {
   normalizeRelativePath,
   resolveInside,
   isSafeProjectName,
-  DEFAULT_AGENT
+  DEFAULT_AGENT,
+  loadProjectSettings
 } = require('./sync-executor.js');
 const { discoverAgentCapabilities } = require('./agent-adapters.js');
 const { listPromptTemplates, SAMPLE_PROMPT_TEMPLATE } = require('./ai-merge-engine.js');
@@ -28,6 +29,7 @@ const { readSyncHistory, saveSuccessfulSync } = require('./sync-history.js');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SOURCES_DIR = path.join(ROOT_DIR, 'sources');
 const PORT = Number(process.env.SKILLSYNC_PORT || 4173);
+const HOST = process.env.SKILLSYNC_HOST || '0.0.0.0';
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.copilot', '.cache']);
 
 const MIME_TYPES = {
@@ -658,11 +660,32 @@ async function handleApi(req, res, url, deps = {}) {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return true;
+  }
+
+  if (url.pathname === '/api/config') {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const err = new Error(`Method ${req.method} Not Allowed`);
+      err.statusCode = 405;
+      throw err;
+    }
+
+    const config = await loadProjectSettings(ROOT_DIR);
+    const payload = JSON.stringify({ ok: true, config: config || {} });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(payload)
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+    } else {
+      res.end(payload);
+    }
     return true;
   }
 
@@ -1046,7 +1069,8 @@ async function serveStatic(req, res, url) {
 
   res.writeHead(200, {
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(content)
+    'Content-Length': Buffer.byteLength(content),
+    'Cache-Control': 'no-cache, no-store, must-revalidate'
   });
 
   if (req.method === 'HEAD') {
@@ -1102,8 +1126,9 @@ function createServer() {
 // -------------------------------------------------------------
 if (require.main === module) {
   const server = createServer();
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`SkillSync server running at http://127.0.0.1:${PORT}`);
+  server.listen(PORT, HOST, () => {
+    const displayHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
+    console.log(`SkillSync server running at http://${displayHost}:${PORT} (bound to ${HOST})`);
   });
 }
 
@@ -1127,5 +1152,6 @@ module.exports = {
   ROOT_DIR,
   SOURCES_DIR,
   PORT,
+  HOST,
   IGNORED_DIRS
 };

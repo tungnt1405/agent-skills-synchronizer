@@ -36,9 +36,52 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const SOURCES_DIR = path.join(ROOT_DIR, 'sources');
 const BACKUP_ROOT = path.join(ROOT_DIR, '.skillsync', 'backups');
 const LOG_FILE = path.join(ROOT_DIR, '.skillsync', 'logs', 'sync-execution.log');
+const WATCHER_LOG_FILE = path.join(ROOT_DIR, '.skillsync', 'logs', 'watcher.log');
+
+/**
+ * Format compact agent diagnostics for watcher.log without leaking prompt/file contents.
+ *
+ * @param {object|undefined} diagnostics
+ * @returns {string}
+ */
+function formatWatcherDiagnostics(diagnostics) {
+  if (!diagnostics || typeof diagnostics !== 'object') return '';
+  const fields = [];
+  if (diagnostics.durationMs !== undefined) fields.push(`durationMs=${diagnostics.durationMs}`);
+  if (diagnostics.exitCode !== undefined && diagnostics.exitCode !== null) fields.push(`exitCode=${diagnostics.exitCode}`);
+  if (diagnostics.stdoutBytes !== undefined) fields.push(`stdoutBytes=${diagnostics.stdoutBytes}`);
+  if (diagnostics.stderrBytes !== undefined) fields.push(`stderrBytes=${diagnostics.stderrBytes}`);
+  if (diagnostics.parsedChars !== undefined) fields.push(`parsedChars=${diagnostics.parsedChars}`);
+  if (diagnostics.events) fields.push(`events=${diagnostics.events}`);
+  if (diagnostics.stderrSnippet) fields.push(`stderr="${diagnostics.stderrSnippet}"`);
+  return fields.join(' ');
+}
 
 const SUPPORTED_AGENTS = Object.freeze(Object.keys(AGENT_CATALOG));
 const DEFAULT_AGENT = 'agy';
+
+/**
+ * Load project settings from setting.json (or tais/setting.json).
+ *
+ * @param {string} [rootDir=ROOT_DIR]
+ * @param {string} [settingsPath=null]
+ * @returns {Promise<object|null>}
+ */
+async function loadProjectSettings(rootDir = ROOT_DIR, settingsPath = null) {
+  try {
+    const targetPath = settingsPath || path.join(rootDir, 'setting.json');
+    let raw = null;
+    try {
+      raw = await fs.readFile(targetPath, 'utf8');
+    } catch {
+      const taisPath = path.join(rootDir, 'tais', 'setting.json');
+      raw = await fs.readFile(taisPath, 'utf8');
+    }
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Check if the specified agent CLI is installed and available.
@@ -171,6 +214,36 @@ function resolveInside(root, relativePath) {
   return fullPath;
 }
 
+const DIRECT_COPY_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg', '.bmp', '.tiff', '.avif',
+  '.woff', '.woff2', '.ttf', '.eot', '.otf', '.pdf', '.zip', '.tar', '.gz'
+]);
+
+/**
+ * Determine whether a file should be copied directly via tool (`cp`) rather than merged as UTF-8 text by AI.
+ *
+ * @param {string} filePath
+ * @returns {Promise<{ directCopy: boolean, buffer: Buffer }>}
+ */
+async function inspectFileForDirectCopy(filePath) {
+  let buffer;
+  try {
+    buffer = await fs.readFile(filePath);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      const error = new Error(`File not found: ${path.basename(filePath)}`);
+      error.statusCode = 404;
+      error.code = 'ERR_FILE_IO';
+      throw error;
+    }
+    err.code = err.code || 'ERR_FILE_IO';
+    throw err;
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  const directCopy = DIRECT_COPY_EXTENSIONS.has(ext) || buffer.includes(0);
+  return { directCopy, buffer };
+}
+
 /**
  * Read UTF-8 text file, throwing if binary content (null byte) is detected.
  *
@@ -264,6 +337,38 @@ async function atomicWriteFile(filePath, content) {
 }
 
 /**
+ * Atomically copy a binary or asset file from Reference to Target using `cp` on POSIX (fs.copyFile on Windows).
+ *
+ * @param {string} srcPath
+ * @param {string} destPath
+ * @returns {Promise<void>}
+ */
+async function atomicCopyFile(srcPath, destPath) {
+  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  const tempPath = `${destPath}.skillsync-${process.pid}-${Date.now()}.tmp`;
+  try {
+    if (process.platform !== 'win32') {
+      const cpRes = spawnSync('cp', ['-f', srcPath, tempPath], {
+        stdio: 'pipe',
+        encoding: 'utf8',
+        shell: false
+      });
+      if (cpRes.error || cpRes.status !== 0) {
+        const err = new Error(cpRes.stderr || cpRes.error?.message || `cp failed for ${path.basename(srcPath)}`);
+        err.code = 'ERR_FILE_IO';
+        throw err;
+      }
+    } else {
+      await fs.copyFile(srcPath, tempPath);
+    }
+    await fs.rename(tempPath, destPath);
+  } catch (err) {
+    await removeIfExists(tempPath);
+    throw err;
+  }
+}
+
+/**
  * Build side-by-side diff rows for Diff Inspector.
  *
  * @param {string} beforeText
@@ -334,8 +439,35 @@ async function prepareOperations(batch, roots, syncSessionId, mergeWithAgent) {
     const referencePath = resolveInside(roots.referenceRoot, relativePath);
     const backupPath = resolveInside(path.join(roots.backupRoot, syncSessionId), relativePath);
 
-    const targetContent = await readTextFile(targetPath);
-    const referenceContent = await readTextFile(referencePath);
+    const refInspect = await inspectFileForDirectCopy(referencePath);
+    const targetInspect = await inspectFileForDirectCopy(targetPath);
+
+    if (refInspect.directCopy || targetInspect.directCopy) {
+      if (Buffer.compare(targetInspect.buffer, refInspect.buffer) === 0) {
+        continue;
+      }
+      await copyBackup(targetPath, backupPath);
+      operations.push({
+        kind: 'matching',
+        isBinaryCopy: true,
+        relativePath,
+        targetPath,
+        referencePath,
+        backupPath,
+        before: `[Binary/Asset file (${targetInspect.buffer.length} bytes)]`,
+        after: `[Copied via cp from Reference (${refInspect.buffer.length} bytes)]`,
+        aiResult: {
+          ok: true,
+          engineName: 'direct-copy',
+          analysisSummary: 'Copied directly via cp (binary/asset file)',
+          conflictPoints: []
+        }
+      });
+      continue;
+    }
+
+    const targetContent = targetInspect.buffer.toString('utf8');
+    const referenceContent = refInspect.buffer.toString('utf8');
 
     // Mandatory backup before any target write is attempted
     await copyBackup(targetPath, backupPath);
@@ -402,16 +534,130 @@ async function prepareOperations(batch, roots, syncSessionId, mergeWithAgent) {
     const targetPath = resolveInside(roots.targetRoot, relativePath);
     const referencePath = resolveInside(roots.referenceRoot, relativePath);
 
+    let targetExists = false;
     try {
       await fs.access(targetPath);
-      const err = new Error(`File declared as new already exists in target: ${relativePath}`);
-      err.statusCode = 400;
-      throw err;
+      targetExists = true;
     } catch (e) {
       if (e.code !== 'ENOENT') throw e;
     }
 
-    const referenceContent = await readTextFile(referencePath);
+    const refInspect = await inspectFileForDirectCopy(referencePath);
+    if (refInspect.directCopy) {
+      if (targetExists) {
+        const targetInspect = await inspectFileForDirectCopy(targetPath);
+        if (Buffer.compare(targetInspect.buffer, refInspect.buffer) === 0) {
+          continue;
+        }
+        const backupPath = resolveInside(path.join(roots.backupRoot, syncSessionId), relativePath);
+        await copyBackup(targetPath, backupPath);
+        operations.push({
+          kind: 'matching',
+          isBinaryCopy: true,
+          relativePath,
+          targetPath,
+          referencePath,
+          backupPath,
+          before: `[Binary/Asset file (${targetInspect.buffer.length} bytes)]`,
+          after: `[Copied via cp from Reference (${refInspect.buffer.length} bytes)]`,
+          aiResult: {
+            ok: true,
+            engineName: 'direct-copy',
+            analysisSummary: 'Copied directly via cp (binary/asset file)',
+            conflictPoints: []
+          }
+        });
+      } else {
+        operations.push({
+          kind: 'new',
+          isBinaryCopy: true,
+          relativePath,
+          targetPath,
+          referencePath,
+          backupPath: '',
+          before: '',
+          after: `[Copied via cp from Reference (${refInspect.buffer.length} bytes)]`,
+          aiResult: {
+            ok: true,
+            engineName: 'direct-copy',
+            analysisSummary: 'Copied directly via cp (binary/asset file)',
+            conflictPoints: []
+          }
+        });
+      }
+      continue;
+    }
+
+    const referenceContent = refInspect.buffer.toString('utf8');
+
+    // Nếu file đã tồn tại trong target
+    if (targetExists) {
+      const targetContent = await readTextFile(targetPath);
+      // NẾU đã tồn tại thì không cần tạo lại; nếu nội dung đã là mới nhất (trùng khớp hoàn toàn) thì bỏ qua làm tiếp
+      if (targetContent === referenceContent) {
+        continue;
+      }
+
+      // NẾU nội dung khác nhau, xử lý an toàn như matching file: tạo backup trước khi ghi và merge
+      const backupPath = resolveInside(path.join(roots.backupRoot, syncSessionId), relativePath);
+      await copyBackup(targetPath, backupPath);
+
+      let aiResult;
+      try {
+        aiResult = await agentMerger({
+          kind: 'matching',
+          relativePath,
+          targetContent,
+          referenceContent,
+          syncSessionId
+        });
+      } catch (agentErr) {
+        await fs.copyFile(backupPath, targetPath).catch(() => {});
+        const isTimeout = agentErr?.code === 'TIMEOUT' || agentErr?.code === 'ETIMEDOUT' || agentErr?.name === 'TimeoutError';
+        const safeCode = isTimeout ? 'ERR_AI_TIMEOUT' : (agentErr?.code || 'ERR_AI_EXECUTION_FAILED');
+        const safeMsg = `Agent merge failed for ${relativePath}: ${safeCode}`;
+        const err = new Error(safeMsg);
+        err.statusCode = 500;
+        err.code = safeCode;
+        err.failedStep = 'merge';
+        err.failedFile = relativePath;
+        err.publicLog = safeMsg;
+        throw err;
+      }
+
+      if (!aiResult || !aiResult.ok || typeof aiResult.content !== 'string') {
+        await fs.copyFile(backupPath, targetPath).catch(() => {});
+        let safeCode;
+        if (aiResult && aiResult.ok && typeof aiResult.content !== 'string') {
+          safeCode = aiResult?.code || 'ERR_AI_MALFORMED_OUTPUT';
+        } else {
+          safeCode = aiResult?.code || 'ERR_AI_EXECUTION_FAILED';
+        }
+        const isTimeout = safeCode === 'TIMEOUT' || safeCode === 'ERR_AI_TIMEOUT' || (typeof aiResult?.error === 'string' && aiResult.error.includes('timed out'));
+        if (isTimeout) {
+          safeCode = 'ERR_AI_TIMEOUT';
+        }
+        const safeMsg = `Agent merge failed for ${relativePath}: ${safeCode}`;
+        const err = new Error(safeMsg);
+        err.statusCode = 500;
+        err.code = safeCode;
+        err.failedStep = 'merge';
+        err.failedFile = relativePath;
+        err.publicLog = safeMsg;
+        throw err;
+      }
+
+      operations.push({
+        kind: 'matching',
+        relativePath,
+        targetPath,
+        backupPath,
+        before: targetContent,
+        after: aiResult.content,
+        aiResult
+      });
+      continue;
+    }
 
     let aiResult;
     try {
@@ -505,10 +751,23 @@ async function rollbackWrittenOperations(written) {
  * @returns {Promise<object>}
  */
 async function executeSyncBatch(batch, options = {}) {
+  const resolvedRootDir = options.rootDir || (options.sourcesDir ? path.resolve(options.sourcesDir, '..') : ROOT_DIR);
+  const projectSettings = await loadProjectSettings(resolvedRootDir, options.settingsPath);
+  const settingsDefaultAgent = (typeof projectSettings?.agentSync?.defaultAgent === 'string' && projectSettings.agentSync.defaultAgent.trim())
+    ? projectSettings.agentSync.defaultAgent.trim()
+    : null;
+  const settingsTimeout = (typeof projectSettings?.agentSync?.defaultTimeoutMs === 'number')
+    ? projectSettings.agentSync.defaultTimeoutMs
+    : null;
+  const settingsMaxTimeout = (typeof projectSettings?.agentSync?.maxTimeoutMs === 'number')
+    ? projectSettings.agentSync.maxTimeoutMs
+    : null;
+
   // 1. Pre-sync Agent Check (legacy CLI installation check)
+  const defaultAgentFallback = settingsDefaultAgent || DEFAULT_AGENT;
   const agent = (batch?.aiEngine && typeof batch.aiEngine === 'object' && batch.aiEngine.agent)
     ? batch.aiEngine.agent
-    : (batch?.agent || batch?.targetAgent || DEFAULT_AGENT);
+    : (batch?.agent || batch?.targetAgent || defaultAgentFallback);
   if (!options.skipAgentCheck) {
     const agentCheck = checkAgentInstalled(agent);
     if (!agentCheck.ok) {
@@ -577,12 +836,21 @@ async function executeSyncBatch(batch, options = {}) {
 
   const syncSessionId = createSessionId(batch?.syncSessionId);
 
-  // Determine logFile: explicit option > null if test environment > default LOG_FILE
+  // Determine logFile & watcherLogFile: explicit option > null if test environment > default log files
   let logFile = LOG_FILE;
   if (options.logFile !== undefined) {
     logFile = options.logFile;
   } else if (process.env.NODE_ENV === 'test') {
     logFile = null;
+  }
+
+  let watcherLogFile = WATCHER_LOG_FILE;
+  if (options.watcherLogFile !== undefined) {
+    watcherLogFile = options.watcherLogFile;
+  } else if (process.env.NODE_ENV === 'test') {
+    watcherLogFile = null;
+  } else if (options.logFile !== undefined) {
+    watcherLogFile = options.logFile ? path.join(path.dirname(options.logFile), 'watcher.log') : null;
   }
 
   if (logFile) {
@@ -595,25 +863,45 @@ async function executeSyncBatch(batch, options = {}) {
     backupRoot
   };
 
-  let settingsTimeout = null;
-  try {
-    const settingsPath = path.join(ROOT_DIR, 'setting.json');
-    const rawSettings = await fs.readFile(settingsPath, 'utf8');
-    const parsed = JSON.parse(rawSettings);
-    settingsTimeout = parsed?.agentSync?.defaultTimeoutMs;
-  } catch {
-    // fallback an toàn nếu không có setting.json
+  // Phân giải effectiveTimeout:
+  // 1. Nếu caller/batch truyền timeoutMs khác giá trị mặc định client (180000), ưu tiên override từ caller
+  // 2. Nếu không có override riêng biệt, sử dụng settingsTimeout từ setting.json (nếu có)
+  // 3. Fallback theo chuỗi ưu tiên hoặc mặc định 180000 ms
+  let effectiveTimeout = 180000;
+  if (typeof batch?.executionOptions?.timeoutMs === 'number' && batch.executionOptions.timeoutMs !== 180000) {
+    effectiveTimeout = batch.executionOptions.timeoutMs;
+  } else if (typeof batch?.options?.timeoutMs === 'number' && batch.options.timeoutMs !== 180000) {
+    effectiveTimeout = batch.options.timeoutMs;
+  } else if (typeof options.timeout === 'number' && options.timeout !== 180000) {
+    effectiveTimeout = options.timeout;
+  } else if (typeof settingsTimeout === 'number') {
+    effectiveTimeout = settingsTimeout;
+  } else if (typeof batch?.executionOptions?.timeoutMs === 'number') {
+    effectiveTimeout = batch.executionOptions.timeoutMs;
+  } else if (typeof batch?.options?.timeoutMs === 'number') {
+    effectiveTimeout = batch.options.timeoutMs;
+  } else if (typeof options.timeout === 'number') {
+    effectiveTimeout = options.timeout;
   }
 
-  const effectiveTimeout = batch?.executionOptions?.timeoutMs
-    || batch?.options?.timeoutMs
-    || options.timeout
-    || settingsTimeout
-    || 180000; // 3 phút mặc định
+  // Áp dụng maxTimeoutMs nếu cấu hình trần > 0 (0 = vô hạn)
+  if (typeof settingsMaxTimeout === 'number' && settingsMaxTimeout > 0 && effectiveTimeout !== 0 && effectiveTimeout > settingsMaxTimeout) {
+    effectiveTimeout = settingsMaxTimeout;
+  }
+
+  if (watcherLogFile) {
+    await appendLog(watcherLogFile, 'INFO', syncSessionId, `[SYNC_START] target=${targetName} reference=${referenceName} agent=${validatedAiEngine.agent} model=${validatedAiEngine.model || 'default'} timeoutMs=${effectiveTimeout}`);
+  }
 
   const templateId = (typeof batch?.templateId === 'string' && batch.templateId.trim())
     ? batch.templateId.trim()
     : 'default';
+
+  const language = (typeof batch?.language === 'string' && batch.language.trim())
+    ? batch.language.trim()
+    : (typeof batch?.options?.language === 'string' && batch.options.language.trim())
+      ? batch.options.language.trim()
+      : 'English';
 
   let promptTemplateText;
   try {
@@ -659,19 +947,63 @@ async function executeSyncBatch(batch, options = {}) {
         TARGET_PATH: relativePath,
         REFERENCE_PATH: relativePath,
         TARGET_CONTENT: kind === 'matching' ? targetContent : '',
-        REFERENCE_CONTENT: referenceContent
+        REFERENCE_CONTENT: referenceContent,
+        LANGUAGE: language
       });
 
-      return await agentMerger({
-        agent: validatedAiEngine.agent,
-        provider: validatedAiEngine.provider,
-        model: validatedAiEngine.model,
-        prompt,
-        sandbox: options.sandbox,
-        runProcess: options.runProcess,
-        timeout: effectiveTimeout,
-        cwd: roots.targetRoot || ROOT_DIR
-      });
+      if (watcherLogFile) {
+        await appendLog(
+          watcherLogFile,
+          'INFO',
+          syncSessionId,
+          `[MERGE_START] kind=${kind} file=${relativePath} agent=${validatedAiEngine.agent} model=${validatedAiEngine.model || 'default'} promptChars=${prompt.length}`
+        );
+      }
+
+      let result;
+      try {
+        result = await agentMerger({
+          agent: validatedAiEngine.agent,
+          provider: validatedAiEngine.provider,
+          model: validatedAiEngine.model,
+          prompt,
+          sandbox: options.sandbox,
+          runProcess: options.runProcess,
+          timeout: effectiveTimeout,
+          cwd: roots.targetRoot || ROOT_DIR
+        });
+      } catch (mergeErr) {
+        if (watcherLogFile) {
+          await appendLog(
+            watcherLogFile,
+            'ERROR',
+            syncSessionId,
+            `[MERGE_THROW] kind=${kind} file=${relativePath} code=${mergeErr?.code || 'ERR_AI_EXECUTION_FAILED'} error="${mergeErr?.message || String(mergeErr)}"`
+          );
+        }
+        throw mergeErr;
+      }
+
+      if (watcherLogFile) {
+        const diagText = formatWatcherDiagnostics(result?.diagnostics);
+        if (result && result.ok && typeof result.content === 'string') {
+          await appendLog(
+            watcherLogFile,
+            'INFO',
+            syncSessionId,
+            `[MERGE_OK] kind=${kind} file=${relativePath}${diagText ? ` ${diagText}` : ''}`
+          );
+        } else {
+          await appendLog(
+            watcherLogFile,
+            'ERROR',
+            syncSessionId,
+            `[MERGE_FAIL] kind=${kind} file=${relativePath} code=${result?.code || 'UNKNOWN'} error="${result?.error || 'Unknown error'}"${diagText ? ` ${diagText}` : ''}`
+          );
+        }
+      }
+
+      return result;
     };
 
   // 3. Prepare operations and perform all backups before any target file write
@@ -689,7 +1021,14 @@ async function executeSyncBatch(batch, options = {}) {
   // 4. Atomic writes with rollback on failure
   try {
     for (const operation of operations) {
-      await atomicWriteFile(operation.targetPath, operation.after);
+      if (operation.isBinaryCopy) {
+        if (watcherLogFile) {
+          await appendLog(watcherLogFile, 'INFO', syncSessionId, `[DIRECT_COPY] kind=${operation.kind} file=${operation.relativePath} tool=cp`);
+        }
+        await atomicCopyFile(operation.referencePath, operation.targetPath);
+      } else {
+        await atomicWriteFile(operation.targetPath, operation.after);
+      }
       written.push(operation);
     }
   } catch (err) {
@@ -777,5 +1116,6 @@ module.exports = {
   AGENT_CATALOG,
   discoverAgentCapabilities,
   validateAiEngineSelection,
-  runAgentMerge
+  runAgentMerge,
+  loadProjectSettings
 };
