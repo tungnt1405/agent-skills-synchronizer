@@ -1,0 +1,90 @@
+# Universal Stack Heuristic & Extraction Mapping
+# Version: 2.0.0
+# Description: Multi-language, stack-agnostic extraction rules for Brownfield documentation
+
+stacks:
+  nodejs_javascript:
+    manifests: ["package.json", "package-lock.json"]
+    entry_points: ["index.js", "server.js", "app.js", "src/index.ts", "main.js"]
+    routes:
+      express:
+        patterns: ['app\.(get|post|put|delete|patch)\(["'']([^"'']+)["'']', 'router\.(get|post|put|delete|patch)\(["'']([^"'']+)["'']']
+      fastify:
+        patterns: ['fastify\.(get|post|put|delete)\(["'']([^"'']+)["'']']
+      native_http:
+        patterns: ['pathname === ["'']([^"'']+)["'']', 'url\.startsWith\(["'']([^"'']+)["'']\)']
+    entities:
+      prisma:
+        file_pattern: "**/*.prisma"
+        model_pattern: 'model\s+(\w+)\s+\{'
+      mongoose:
+        pattern: 'new\s+Schema\(\{'
+      typescript:
+        pattern: 'interface\s+(\w+)\s+\{|type\s+(\w+)\s+=\s+\{'
+
+  zero_build_spa:
+    manifests: ["index.html"]
+    entry_points: ["index.html", "assets/js/app.js"]
+    state_patterns: ["class Store", "const store =", "state = {"]
+    view_patterns: ['id=["'']view-([^"'']+)["'']', 'id=["'']modal-([^"'']+)["'']']
+
+  python:
+    manifests: ["pyproject.toml", "requirements.txt", "Pipfile"]
+    entry_points: ["main.py", "app.py", "manage.py", "wsgi.py"]
+    routes:
+      fastapi:
+        patterns: ['@(?:app|router)\.(get|post|put|delete|patch)\(["'']([^"'']+)["'']']
+      flask:
+        patterns: ['@app\.route\(["'']([^"'']+)["''](?:.*?methods=\[([^\]]+)\])?']
+      django:
+        file_pattern: "**/urls.py"
+        patterns: ['path\(["'']([^"'']+)["'']']
+    entities:
+      sqlalchemy:
+        patterns: ['class\s+(\w+)\(.*Base.*\):', '__tablename__\s*=\s*["''](\w+)["'']']
+      pydantic:
+        patterns: ['class\s+(\w+)\(BaseModel\):']
+
+  golang:
+    manifests: ["go.mod"]
+    entry_points: ["main.go", "cmd/**/main.go"]
+    routes:
+      gin:
+        patterns: ['r\.(GET|POST|PUT|DELETE)\(["'']([^"'']+)["'']']
+      chi:
+        patterns: ['r\.(Get|Post|Put|Delete)\(["'']([^"'']+)["'']']
+      net_http:
+        patterns: ['http\.HandleFunc\(["'']([^"'']+)["'']']
+    entities:
+      structs:
+        patterns: ['type\s+(\w+)\s+struct\s+\{']
+
+  rust:
+    manifests: ["Cargo.toml"]
+    entry_points: ["src/main.rs", "src/lib.rs"]
+    routes:
+      actix_web:
+        patterns: ['#\[(?:get|post|put|delete)\(["'']([^"'']+)["'']\)\]']
+      axum:
+        patterns: ['\.route\(["'']([^"'']+)["'']']
+    entities:
+      structs:
+        patterns: ['#\[derive\(.*\)\]\s*pub\s+struct\s+(\w+)']
+
+  java_kotlin:
+    manifests: ["pom.xml", "build.gradle", "build.gradle.kts"]
+    entry_points: ["*Application.java", "*Application.kt"]
+    routes:
+      spring:
+        patterns: ['@(Get|Post|Put|Delete|Patch)Mapping\(["'']([^"'']+)["'']\)', '@RequestMapping\(["'']([^"'']+)["'']\)']
+    entities:
+      jpa:
+        patterns: ['@Entity\s+public\s+class\s+(\w+)', '@Table\(name\s*=\s*["''](\w+)["'']\)']
+
+  agent_ecosystem:
+    manifests: ["CLAUDE.md", "AGENTS.md", "GEMINI.md", "setting.json"]
+    entry_points: [".agents/skills/**/SKILL.md", ".claude/skills/**/SKILL.md", ".github/skills/**/SKILL.md"]
+    skill_patterns:
+      name: 'name:\s*([a-zA-Z0-9_-]+)'
+      description: 'description:\s*(.+)'
+      allowed_tools: 'allowed-tools:\s*(\[[^\]]+\])'

@@ -16,11 +16,17 @@ const {
   normalizeRelativePath,
   resolveInside,
   isSafeProjectName,
-  DEFAULT_AGENT
+  DEFAULT_AGENT,
+  loadProjectSettings
 } = require('./sync-executor.js');
 const { discoverAgentCapabilities } = require('./agent-adapters.js');
 const { listPromptTemplates, SAMPLE_PROMPT_TEMPLATE } = require('./ai-merge-engine.js');
 const { readSyncHistory, saveSuccessfulSync } = require('./sync-history.js');
+const {
+  normalizePathMapping,
+  mapReferenceToTargetPath,
+  resolveReferencePathForTarget
+} = require('./path-mapper.js');
 
 // -------------------------------------------------------------
 // Constants & Guards
@@ -28,6 +34,7 @@ const { readSyncHistory, saveSuccessfulSync } = require('./sync-history.js');
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SOURCES_DIR = path.join(ROOT_DIR, 'sources');
 const PORT = Number(process.env.SKILLSYNC_PORT || 4173);
+const HOST = process.env.SKILLSYNC_HOST || '0.0.0.0';
 const IGNORED_DIRS = new Set(['.git', 'node_modules', '.copilot', '.cache']);
 
 const MIME_TYPES = {
@@ -273,13 +280,26 @@ async function walkFiles(rootDir, baseDir = rootDir) {
 }
 
 /**
+ * Read an optional brand-token path mapping from query parameters.
+ * @param {URLSearchParams} searchParams
+ * @returns {{ from: string, to: string }|null}
+ */
+function readPathMapping(searchParams) {
+  return normalizePathMapping({
+    from: searchParams.get('pathFrom') || '',
+    to: searchParams.get('pathTo') || ''
+  });
+}
+
+/**
  * Compare target and reference source projects by relative file paths and SHA-256 checksums.
  * @param {string} targetName
  * @param {string} referenceName
  * @param {string} [sourcesDir=SOURCES_DIR]
+ * @param {{ from: string, to: string }} [pathMapping] brand-token mapping applied to reference paths
  * @returns {Promise<{ fileTrees: Array<object>, scannedStats: object }>}
  */
-async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR) {
+async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR, pathMapping = null) {
   if (!isSafeProjectName(targetName) || !isSafeProjectName(referenceName)) {
     const err = new Error('Invalid project name: names must be alphanumeric with ., _, or -');
     err.statusCode = 400;
@@ -312,9 +332,16 @@ async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR) 
     targetMap.set(file.path, file);
   }
 
+  const mapping = normalizePathMapping(pathMapping);
   const refMap = new Map();
   for (const file of refFiles) {
-    refMap.set(file.path, file);
+    const mappedRefPath = mapReferenceToTargetPath(file.path, mapping);
+    refMap.set(mappedRefPath, {
+      ...file,
+      mappedPath: mappedRefPath,
+      folder: toPosixPath(path.posix.dirname(mappedRefPath)).replace(/^\.$/, ''),
+      name: path.posix.basename(mappedRefPath)
+    });
   }
 
   const allRelPaths = Array.from(new Set([...targetMap.keys(), ...refMap.keys()])).sort((a, b) => a.localeCompare(b));
@@ -374,6 +401,7 @@ async function scanSources(targetName, referenceName, sourcesDir = SOURCES_DIR) 
       refSize: rFile ? formatBytes(rFile.sizeBytes) : '',
       targetExists: Boolean(tFile),
       refExists: Boolean(rFile),
+      referencePath: rFile ? rFile.path : relPath,
       status,
       note: status === 'synced' ? 'Đã khớp mã băm SHA-256' : 'Checksum khác hoặc file chỉ tồn tại ở một nguồn',
       lastSyncTime: typeof syncHistory[relPath] === 'number' ? syncHistory[relPath] : null
@@ -424,7 +452,13 @@ async function buildPreviewDiff(targetName, referenceName, rawPath, options = {}
   const targetRoot = path.join(sourcesDir, targetName);
   const referenceRoot = path.join(sourcesDir, referenceName);
   const targetPath = resolveInside(targetRoot, relativePath);
-  const referencePath = resolveInside(referenceRoot, relativePath);
+  const referenceRelPath = await resolveReferencePathForTarget(
+    referenceRoot,
+    relativePath,
+    options.referencePath,
+    options.pathMapping
+  );
+  const referencePath = resolveInside(referenceRoot, referenceRelPath);
   const [targetFile, referenceFile] = await Promise.all([
     readOptionalTextFile(targetPath),
     readOptionalTextFile(referencePath)
@@ -532,7 +566,13 @@ async function buildPreviewDiffBatch(targetName, referenceName, rawPaths, option
 
     try {
       const targetPath = resolveInside(targetRoot, relativePath);
-      const referencePath = resolveInside(referenceRoot, relativePath);
+      const referenceRelPath = await resolveReferencePathForTarget(
+        referenceRoot,
+        relativePath,
+        options.referencePath,
+        options.pathMapping
+      );
+      const referencePath = resolveInside(referenceRoot, referenceRelPath);
       const [targetFile, referenceFile] = await Promise.all([
         readOptionalTextFile(targetPath),
         readOptionalTextFile(referencePath)
@@ -658,11 +698,32 @@ async function handleApi(req, res, url, deps = {}) {
 
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return true;
+  }
+
+  if (url.pathname === '/api/config') {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      const err = new Error(`Method ${req.method} Not Allowed`);
+      err.statusCode = 405;
+      throw err;
+    }
+
+    const config = await loadProjectSettings(ROOT_DIR);
+    const payload = JSON.stringify({ ok: true, config: config || {} });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Length': Buffer.byteLength(payload)
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+    } else {
+      res.end(payload);
+    }
     return true;
   }
 
@@ -703,7 +764,8 @@ async function handleApi(req, res, url, deps = {}) {
       throw err;
     }
 
-    const result = await scanSources(target, reference);
+    const pathMapping = readPathMapping(url.searchParams);
+    const result = await scanSources(target, reference, undefined, pathMapping);
     const payload = JSON.stringify(result);
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -823,7 +885,8 @@ async function handleApi(req, res, url, deps = {}) {
       const result = await buildPreviewDiff(
         url.searchParams.get('target'),
         url.searchParams.get('reference'),
-        url.searchParams.get('path')
+        url.searchParams.get('path'),
+        { pathMapping: readPathMapping(url.searchParams) }
       );
       const payload = JSON.stringify(result);
       res.writeHead(200, {
@@ -866,7 +929,10 @@ async function handleApi(req, res, url, deps = {}) {
 
     try {
       const body = await readJsonBody(req);
-      const options = deps || {};
+      const options = {
+        ...deps,
+        pathMapping: normalizePathMapping(body?.pathMapping)
+      };
       const result = await buildPreviewDiffBatch(
         body?.target,
         body?.reference,
@@ -1046,7 +1112,8 @@ async function serveStatic(req, res, url) {
 
   res.writeHead(200, {
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(content)
+    'Content-Length': Buffer.byteLength(content),
+    'Cache-Control': 'no-cache, no-store, must-revalidate'
   });
 
   if (req.method === 'HEAD') {
@@ -1102,8 +1169,9 @@ function createServer() {
 // -------------------------------------------------------------
 if (require.main === module) {
   const server = createServer();
-  server.listen(PORT, '127.0.0.1', () => {
-    console.log(`SkillSync server running at http://127.0.0.1:${PORT}`);
+  server.listen(PORT, HOST, () => {
+    const displayHost = HOST === '0.0.0.0' ? '127.0.0.1' : HOST;
+    console.log(`SkillSync server running at http://${displayHost}:${PORT} (bound to ${HOST})`);
   });
 }
 
@@ -1127,5 +1195,6 @@ module.exports = {
   ROOT_DIR,
   SOURCES_DIR,
   PORT,
+  HOST,
   IGNORED_DIRS
 };

@@ -67,8 +67,17 @@ export async function fetchPromptTemplates(fetchImpl = fetch) {
   };
 }
 
-export async function fetchSourceScan(target, reference, fetchImpl = fetch) {
+export async function fetchServerConfig(fetchImpl = fetch) {
+  const data = await readJson(await fetchImpl(`${API_BASE}/api/config`));
+  return data?.config || {};
+}
+
+export async function fetchSourceScan(target, reference, pathMapping = null, fetchImpl = fetch) {
   const params = new URLSearchParams({ target, reference });
+  if (pathMapping?.from && pathMapping?.to) {
+    params.set('pathFrom', pathMapping.from);
+    params.set('pathTo', pathMapping.to);
+  }
   const data = await readJson(await fetchImpl(`${API_BASE}/api/scan?${params.toString()}`));
   return {
     fileTrees: Array.isArray(data?.fileTrees) ? data.fileTrees : [],
@@ -139,7 +148,11 @@ export async function fetchDiffPreview(target, reference, relativePath, fetchImp
   };
 }
 
-export async function fetchDiffPreviewBatch(target, reference, paths, fetchImpl = fetch) {
+export async function fetchDiffPreviewBatch(target, reference, paths, pathMapping = null, fetchImpl = fetch) {
+  if (typeof pathMapping === 'function') {
+    fetchImpl = pathMapping;
+    pathMapping = null;
+  }
   const response = await fetchImpl(`${API_BASE}/api/diff/preview/batch`, {
     method: 'POST',
     headers: {
@@ -148,7 +161,8 @@ export async function fetchDiffPreviewBatch(target, reference, paths, fetchImpl 
     body: JSON.stringify({
       target,
       reference,
-      paths: Array.isArray(paths) ? paths : []
+      paths: Array.isArray(paths) ? paths : [],
+      ...(pathMapping?.from && pathMapping?.to ? { pathMapping } : {})
     })
   });
   const data = await readJson(response);
