@@ -96,9 +96,9 @@
     <div id="modal-container" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/70 backdrop-blur-sm p-4 transition-all duration-200">
       
       <!-- Modal 1: Confirmation Modal (Stitch Screen 2 - 5a5da8df81a94de7bb42c123ca0de706) -->
-      <div id="modal-confirm" class="modal-dialog hidden w-full max-w-lg bg-surface border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-confirm-title">
+      <div id="modal-confirm" class="modal-dialog hidden w-full max-w-lg max-h-[calc(100vh-2rem)] bg-surface border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200" role="dialog" aria-modal="true" aria-labelledby="modal-confirm-title">
         <!-- Modal Header -->
-        <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 bg-surface-container-low">
+        <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 bg-surface-container-low shrink-0">
           <div class="flex items-center gap-3">
             <div class="w-10 h-10 rounded-xl bg-primary/20 text-primary border border-primary/30 flex items-center justify-center shrink-0 shadow-inner">
               <span class="material-symbols-outlined text-[22px]">swap_horiz</span>
@@ -118,7 +118,7 @@
         </div>
 
         <!-- Modal Body -->
-        <div class="p-6 space-y-4">
+        <div class="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           <!-- Source comparison summary card -->
           <div class="p-4 rounded-xl bg-surface-container-low border border-slate-800 space-y-3">
             <div class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
@@ -147,22 +147,75 @@
             </div>
           </div>
 
-          <!-- Prompt Template Selector -->
-          <div class="p-4 rounded-xl bg-surface-container-low border border-slate-800 space-y-2">
-            <label for="select-prompt-template" class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-              Prompt Template
-            </label>
-            <select
-              id="select-prompt-template"
-              aria-describedby="prompt-template-help"
-              class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus-visible:ring-2 focus-visible:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-colors motion-reduce:transition-none cursor-pointer"
-            >
-              <option value="">Đang tải template...</option>
-            </select>
-            <p id="prompt-template-help" class="text-[11px] text-slate-400">
-              Template lấy từ <code class="font-mono text-slate-300">templates/prompt/&lt;id&gt;.md</code>. Prompt hoàn chỉnh được ghép ở server trước khi gửi AI Agent.
-            </p>
-            <div id="template-error" role="alert" class="hidden space-y-2"></div>
+          <!-- Prompt Template Selector & Language Configuration -->
+          <div class="p-4 rounded-xl bg-surface-container-low border border-slate-800 space-y-3">
+            <div class="space-y-2">
+              <label for="select-prompt-template" class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Prompt Template
+              </label>
+              <select
+                id="select-prompt-template"
+                aria-describedby="prompt-template-help"
+                class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus-visible:ring-2 focus-visible:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-colors motion-reduce:transition-none cursor-pointer"
+              >
+                <option value="">Đang tải template...</option>
+              </select>
+              <p id="prompt-template-help" class="text-[11px] text-slate-400">
+                Template lấy từ <code class="font-mono text-slate-300">templates/prompt/&lt;id&gt;.md</code>. Prompt hoàn chỉnh được ghép ở server trước khi gửi AI Agent.
+              </p>
+              <div id="template-error" role="alert" class="hidden space-y-2"></div>
+            </div>
+
+            <div class="pt-3 border-t border-slate-800/80 space-y-2">
+              <label for="input-prompt-language" class="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+                <span>Ngôn ngữ đầu ra</span>
+                <span class="text-[11px] text-primary-light font-mono lowercase font-normal">{{ LANGUAGE }}</span>
+              </label>
+              <input
+                type="text"
+                id="input-prompt-language"
+                value="English"
+                placeholder="English"
+                aria-describedby="prompt-language-help"
+                class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus-visible:ring-2 focus-visible:ring-primary rounded-lg px-3 py-2 text-xs text-white outline-none transition-colors motion-reduce:transition-none"
+              />
+              <p id="prompt-language-help" class="text-[11px] text-slate-400">
+                Ngôn ngữ AI sẽ dùng cho nội dung xuất ra, truyền vào template qua placeholder <code class="font-mono text-slate-300">{{ LANGUAGE }}</code> (mặc định: English).
+              </p>
+            </div>
+
+            <div class="pt-3 border-t border-slate-800/80 space-y-2">
+              <label class="text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                Đổi tên thương hiệu trong đường dẫn
+              </label>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="space-y-1">
+                  <label for="input-path-rename-from" class="text-[11px] text-slate-400">Reference</label>
+                  <input
+                    type="text"
+                    id="input-path-rename-from"
+                    placeholder="superpowers"
+                    aria-describedby="path-rename-help"
+                    class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus-visible:ring-2 focus-visible:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-colors motion-reduce:transition-none"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label for="input-path-rename-to" class="text-[11px] text-slate-400">Target</label>
+                  <input
+                    type="text"
+                    id="input-path-rename-to"
+                    placeholder="tungnt-ai-skills"
+                    aria-describedby="path-rename-help"
+                    class="w-full bg-surface-container-high border border-slate-700 hover:border-slate-600 focus-visible:ring-2 focus-visible:ring-primary rounded-lg px-3 py-2 text-xs text-white font-mono outline-none transition-colors motion-reduce:transition-none"
+                  />
+                </div>
+              </div>
+              <p id="path-rename-help" class="text-[11px] text-slate-400">
+                Token của Reference được thay bằng token của Target trong tên thư mục và tên tệp, ví dụ
+                <code class="font-mono text-slate-300">using-superpowers</code> thành
+                <code class="font-mono text-slate-300">using-tungnt-ai-skills</code>. Để trống một ô để tắt đổi tên.
+              </p>
+            </div>
           </div>
 
           <!-- Impact Warning Banner -->
@@ -190,7 +243,7 @@
         </div>
 
         <!-- Modal Footer -->
-        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex items-center justify-end gap-3">
+        <div class="px-6 py-4 border-t border-slate-800 bg-surface-container-low flex items-center justify-end gap-3 shrink-0">
           <button type="button" id="btn-cancel-confirm" data-modal-close class="px-4 py-2.5 rounded-xl bg-surface-container hover:bg-surface-container-high border border-slate-700 text-slate-300 hover:text-white font-medium text-xs sm:text-sm transition-all cursor-pointer">
             Hủy bỏ
           </button>
@@ -223,7 +276,7 @@
         </div>
 
         <!-- Modal Body -->
-        <div class="p-6 space-y-4">
+        <div class="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           <!-- Stat highlights -->
           <div class="grid grid-cols-3 gap-3">
             <div class="p-3.5 rounded-xl bg-surface-container-low border border-slate-800 text-center space-y-1">
@@ -313,7 +366,7 @@
         </div>
 
         <!-- Modal Body -->
-        <div class="p-6 space-y-4">
+        <div class="p-6 space-y-4 overflow-y-auto flex-1 min-h-0">
           <!-- Simulated Console Error Log -->
           <div class="space-y-1.5">
             <div class="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">

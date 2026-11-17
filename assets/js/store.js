@@ -18,6 +18,7 @@ export const EXECUTOR_STEPS = ['prepare', 'preflight', 'backup', 'analyze', 'wri
 
 export const AGENT_STORAGE_KEY = 'skillsync.executor.agent';
 export const MODEL_STORAGE_KEY = 'skillsync.executor.model';
+export const LANGUAGE_STORAGE_KEY = 'skillsync.prompt.language';
 
 function getStorageItem(key) {
   try {
@@ -481,6 +482,9 @@ class Store {
       promptTemplatesStatus: 'idle',
       selectedTemplateId: '',
       promptTemplateError: null,
+      promptLanguage: getStorageItem(LANGUAGE_STORAGE_KEY) || 'English',
+      pathRenameFrom: '',
+      pathRenameTo: '',
       executorProvider: 'local-reference-merge-v1',
       activeSyncSession: null,
       executionStatus: 'idle',
@@ -712,7 +716,7 @@ class Store {
 
     let scanSucceeded = false;
     try {
-      const result = await fetchSourceScan(targetRepo, refRepo);
+      const result = await fetchSourceScan(targetRepo, refRepo, this.getPathMapping());
 
       // Check if scan was superseded or target/ref changed while scanning
       if (
@@ -961,6 +965,15 @@ class Store {
 
     const now = new Date().toISOString();
     const syncSessionId = cryptoRandomId();
+    const effectiveLanguage = (typeof this.state.promptLanguage === 'string' && this.state.promptLanguage.trim())
+      ? this.state.promptLanguage.trim()
+      : 'English';
+    if (!this.state.pathRenameFrom.trim()) {
+      this.state.pathRenameFrom = this.state.referenceSource.repo || '';
+    }
+    if (!this.state.pathRenameTo.trim()) {
+      this.state.pathRenameTo = this.state.targetSource.repo || '';
+    }
     this.state.draftSavedAt = now;
     this.state.workflowState = 'selected-for-sync';
     this.state.lastBatchError = '';
@@ -972,6 +985,8 @@ class Store {
       matchingFiles: classification.matching,
       newFiles: classification.newFiles,
       ignoredFiles: classification.ignored,
+      language: effectiveLanguage,
+      pathMapping: this.getPathMapping(),
       createdAt: now,
       draftSavedAt: now
     };
@@ -1187,6 +1202,59 @@ class Store {
   }
 
   /**
+   * Set output language for prompt template
+   * @param {string} language
+   */
+  setPromptLanguage(language) {
+    if (typeof language !== 'string') return;
+    this.state.promptLanguage = language;
+    const clean = language.trim();
+    if (clean) {
+      setStorageItem(LANGUAGE_STORAGE_KEY, clean);
+    }
+    if (this.state.pendingBatch) {
+      this.state.pendingBatch.language = clean || 'English';
+    }
+    this.notify();
+  }
+
+  /**
+   * Get current brand-token path mapping (Reference token -> Target token), or null when disabled
+   * @returns {{ from: string, to: string }|null}
+   */
+  getPathMapping() {
+    const from = (this.state.pathRenameFrom || '').trim();
+    const to = (this.state.pathRenameTo || '').trim();
+    return from && to && from !== to ? { from, to } : null;
+  }
+
+  /**
+   * Set the Reference side brand token used for path renaming
+   * @param {string} value
+   */
+  setPathRenameFrom(value) {
+    if (typeof value !== 'string') return;
+    this.state.pathRenameFrom = value;
+    if (this.state.pendingBatch) {
+      this.state.pendingBatch.pathMapping = this.getPathMapping();
+    }
+    this.notify();
+  }
+
+  /**
+   * Set the Target side brand token used for path renaming
+   * @param {string} value
+   */
+  setPathRenameTo(value) {
+    if (typeof value !== 'string') return;
+    this.state.pathRenameTo = value;
+    if (this.state.pendingBatch) {
+      this.state.pendingBatch.pathMapping = this.getPathMapping();
+    }
+    this.notify();
+  }
+
+  /**
    * Check installation of current target AI agent
    * @param {Function} [fetchImpl]
    * @returns {Promise<object>}
@@ -1301,15 +1369,22 @@ class Store {
       ...(this.state.targetModel ? { model: this.state.targetModel } : {})
     };
 
+    const effectiveLanguage = (typeof this.state.promptLanguage === 'string' && this.state.promptLanguage.trim())
+      ? this.state.promptLanguage.trim()
+      : 'English';
+
     const payload = {
       ...this.state.pendingBatch,
       agent: this.state.targetAgent || 'local',
       aiEngine,
       templateId: this.state.selectedTemplateId || undefined,
+      language: effectiveLanguage,
+      pathMapping: this.getPathMapping(),
       options: {
         createBackup: true,
         preserveTargetStructure: true,
-        referenceIsContentAuthority: true
+        referenceIsContentAuthority: true,
+        language: effectiveLanguage
       }
     };
 
@@ -1482,6 +1557,7 @@ class Store {
         this.state.targetSource.repo,
         this.state.referenceSource.repo,
         validPaths,
+        this.getPathMapping(),
         fetchImpl
       );
 
@@ -1843,6 +1919,7 @@ if (typeof window !== 'undefined') {
   window.EXECUTOR_STEPS = EXECUTOR_STEPS;
   window.AGENT_STORAGE_KEY = AGENT_STORAGE_KEY;
   window.MODEL_STORAGE_KEY = MODEL_STORAGE_KEY;
+  window.LANGUAGE_STORAGE_KEY = LANGUAGE_STORAGE_KEY;
 }
 
 export default appStore;

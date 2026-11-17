@@ -46,6 +46,11 @@ function updateConfirmModalData(state) {
   setText('modal-confirm-matching-count', `${(batch.matchingFiles || []).length} trùng tên`);
   setText('modal-confirm-new-count', `${(batch.newFiles || []).length} file mới`);
   setText('modal-confirm-draft-time', formatTime(batch.draftSavedAt));
+
+  const renameFromInput = document.getElementById('input-path-rename-from');
+  if (renameFromInput) renameFromInput.value = state.pathRenameFrom || '';
+  const renameToInput = document.getElementById('input-path-rename-to');
+  if (renameToInput) renameToInput.value = state.pathRenameTo || '';
 }
 
 /**
@@ -91,6 +96,10 @@ function updatePromptTemplateUI(state = {}) {
   const select = document.getElementById('select-prompt-template');
   const errorBox = document.getElementById('template-error');
   const proceedBtn = document.getElementById('btn-proceed-confirm');
+  const languageInput = document.getElementById('input-prompt-language');
+  if (languageInput && document.activeElement !== languageInput) {
+    languageInput.value = state.promptLanguage || 'English';
+  }
   if (!select || !errorBox || !proceedBtn) return;
 
   select.innerHTML = '';
@@ -661,6 +670,34 @@ export function initApp() {
   if (promptTemplateSelect) {
     promptTemplateSelect.addEventListener('change', () => {
       appStore.setSelectedTemplateId(promptTemplateSelect.value);
+    });
+  }
+
+  const promptLanguageInput = document.getElementById('input-prompt-language');
+  if (promptLanguageInput) {
+    promptLanguageInput.value = appStore.getState().promptLanguage || 'English';
+    promptLanguageInput.addEventListener('input', () => {
+      appStore.setPromptLanguage(promptLanguageInput.value);
+    });
+    promptLanguageInput.addEventListener('change', () => {
+      if (!promptLanguageInput.value.trim()) {
+        promptLanguageInput.value = 'English';
+        appStore.setPromptLanguage('English');
+      }
+    });
+  }
+
+  const pathRenameFromInput = document.getElementById('input-path-rename-from');
+  if (pathRenameFromInput) {
+    pathRenameFromInput.addEventListener('input', () => {
+      appStore.setPathRenameFrom(pathRenameFromInput.value);
+    });
+  }
+
+  const pathRenameToInput = document.getElementById('input-path-rename-to');
+  if (pathRenameToInput) {
+    pathRenameToInput.addEventListener('input', () => {
+      appStore.setPathRenameTo(pathRenameToInput.value);
     });
   }
 

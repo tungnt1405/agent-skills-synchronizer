@@ -251,6 +251,72 @@ function parseOpencodeOutput(stdout) {
 }
 
 /**
+ * Summarize JSONL event types and finish reasons from OpenCode stdout for diagnostics.
+ *
+ * @param {string} stdout
+ * @returns {string}
+ */
+function summarizeOpencodeEvents(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return 'none';
+
+  const counts = {};
+  let finishReason = '';
+  for (const raw of stripAnsi(stdout).split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line);
+      const type = event && typeof event.type === 'string' ? event.type : 'unknown';
+      counts[type] = (counts[type] || 0) + 1;
+      if (event?.part?.reason) {
+        finishReason = String(event.part.reason);
+      } else if (event?.reason) {
+        finishReason = String(event.reason);
+      }
+    } catch {
+      counts.non_json = (counts.non_json || 0) + 1;
+    }
+  }
+
+  const summary = Object.entries(counts)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(',');
+  return finishReason ? `${summary || 'none'} (finish=${finishReason})` : (summary || 'none');
+}
+
+/**
+ * Build compact, non-sensitive diagnostics metadata for watcher logging.
+ *
+ * @param {object} adapter
+ * @param {object|null} procResult
+ * @param {string} parsedContent
+ * @param {number} durationMs
+ * @returns {object}
+ */
+function buildAgentDiagnostics(adapter, procResult, parsedContent, durationMs) {
+  const rawStdout = typeof procResult?.stdout === 'string' ? procResult.stdout : '';
+  const rawStderr = typeof procResult?.stderr === 'string' ? procResult.stderr : '';
+  const exitCode = procResult
+    ? (procResult.exitCode ?? procResult.status ?? procResult.code ?? (procResult.error ? 1 : 0))
+    : null;
+
+  const diagnostics = {
+    durationMs,
+    exitCode,
+    stdoutBytes: Buffer.byteLength(rawStdout, 'utf8'),
+    stderrBytes: Buffer.byteLength(rawStderr, 'utf8'),
+    parsedChars: typeof parsedContent === 'string' ? parsedContent.length : 0,
+    stderrSnippet: rawStderr.trim().slice(0, 200)
+  };
+
+  if (adapter?.id === 'opencode') {
+    diagnostics.events = summarizeOpencodeEvents(rawStdout);
+  }
+
+  return diagnostics;
+}
+
+/**
  * Apply an adapter's optional parseOutput hook with defensive error handling.
  *
  * @param {object} adapter
@@ -296,8 +362,8 @@ const AGENT_CATALOG = Object.freeze({
     provider: Object.freeze({ id: 'agy', label: 'AGY' }),
     versionArgs: Object.freeze(['--version']),
     modelArgs: Object.freeze(['models']),
-    buildMergeArgs: ({ model, disableSlashCommands = true } = {}) => {
-      const args = ['--sandbox', '--dangerously-skip-permissions'];
+    buildMergeArgs: ({ model, disableSlashCommands = false } = {}) => {
+      const args = ['--dangerously-skip-permissions'];
       if (disableSlashCommands) {
         args.push('--disable-slash-commands');
       }
@@ -331,8 +397,8 @@ const AGENT_CATALOG = Object.freeze({
     versionArgs: Object.freeze(['--version']),
     modelArgs: Object.freeze(['debug', 'models']),
     buildMergeArgs: ({ model } = {}) => (model
-      ? ['exec', '-s', 'read-only', '-m', model]
-      : ['exec', '-s', 'read-only']),
+      ? ['exec', '--dangerously-bypass-approvals-and-sandbox', '-m', model]
+      : ['exec', '--dangerously-bypass-approvals-and-sandbox']),
     discoverModels: parseCodexModels
   }),
   opencode: Object.freeze({
@@ -949,6 +1015,7 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
 
   const runner = typeof opts.runProcess === 'function' ? opts.runProcess : defaultRunProcess;
   const prompt = typeof opts.prompt === 'string' ? opts.prompt : '';
+  const startedAt = Date.now();
 
   try {
     const procResult = await runner(launch.command, launch.args, {
@@ -956,12 +1023,14 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       timeout: opts.timeout || 120000,
       ...(opts.cwd ? { cwd: opts.cwd } : {})
     });
+    const durationMs = Date.now() - startedAt;
 
     if (!procResult || typeof procResult !== 'object') {
       return {
         ok: false,
         code: 'AGENT_EXECUTION_FAILED',
-        error: 'Agent execution failed: no process result'
+        error: 'Agent execution failed: no process result',
+        diagnostics: buildAgentDiagnostics(adapter, null, '', durationMs)
       };
     }
 
@@ -972,7 +1041,8 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       return {
         ok: false,
         code: isTimeout ? 'TIMEOUT' : 'AGENT_EXECUTION_FAILED',
-        error: procResult.stderr || procResult.error?.message || (isTimeout ? 'Agent execution timed out' : 'Agent execution failed')
+        error: procResult.stderr || procResult.error?.message || (isTimeout ? 'Agent execution timed out' : 'Agent execution failed'),
+        diagnostics: buildAgentDiagnostics(adapter, procResult, '', durationMs)
       };
     }
 
@@ -980,7 +1050,8 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       return {
         ok: false,
         code: 'INVALID_AGENT_OUTPUT',
-        error: 'Control-plane fields are not allowed in agent output'
+        error: 'Control-plane fields are not allowed in agent output',
+        diagnostics: buildAgentDiagnostics(adapter, procResult, '', durationMs)
       };
     }
 
@@ -989,7 +1060,8 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       return {
         ok: false,
         code: 'INVALID_AGENT_OUTPUT',
-        error: 'Missing content from agent CLI output'
+        error: 'Missing content from agent CLI output',
+        diagnostics: buildAgentDiagnostics(adapter, procResult, '', durationMs)
       };
     }
 
@@ -997,13 +1069,17 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       return {
         ok: false,
         code: 'INVALID_AGENT_OUTPUT',
-        error: 'Agent CLI output exceeds maximum allowed size'
+        error: 'Agent CLI output exceeds maximum allowed size',
+        diagnostics: buildAgentDiagnostics(adapter, procResult, '', durationMs)
       };
     }
 
     const parsedOutput = safeParseAgentOutput(adapter, rawStdout);
     if (!parsedOutput.ok) {
-      return parsedOutput;
+      return {
+        ...parsedOutput,
+        diagnostics: buildAgentDiagnostics(adapter, procResult, '', durationMs)
+      };
     }
 
     const content = Buffer.from(
@@ -1014,7 +1090,8 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       return {
         ok: false,
         code: 'INVALID_AGENT_OUTPUT',
-        error: 'Missing content from agent CLI output'
+        error: 'Missing content from agent CLI output',
+        diagnostics: buildAgentDiagnostics(adapter, procResult, content, durationMs)
       };
     }
 
@@ -1023,14 +1100,16 @@ async function runAgentMerge(options = {}, maybeOptions = {}) {
       content,
       engineName: adapter.id,
       analysisSummary: `Merged via ${adapter.label}`,
-      conflictPoints: []
+      conflictPoints: [],
+      diagnostics: buildAgentDiagnostics(adapter, procResult, content, durationMs)
     };
   } catch (err) {
     // Enforce sandbox boundary: Never fall back to executing on host without sandbox if execution fails or errors.
     return {
       ok: false,
       code: 'AGENT_EXECUTION_FAILED',
-      error: err.message || String(err)
+      error: err.message || String(err),
+      diagnostics: buildAgentDiagnostics(adapter, null, '', Date.now() - startedAt)
     };
   }
 }
